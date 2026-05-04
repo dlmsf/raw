@@ -276,6 +276,61 @@ rm_dir() {
     rm -rf "$1" 2>/dev/null
 }
 
+# ============================================
+# EXECUTION TIME TRACKING (for --log mode)
+# ============================================
+EXECUTION_START_TIME=""
+EXECUTION_END_TIME=""
+
+# Function: Format execution time beautifully
+format_execution_time() {
+    local duration_ms="$1"
+    local hours=$((duration_ms / 3600000))
+    local minutes=$(((duration_ms % 3600000) / 60000))
+    local seconds=$(((duration_ms % 60000) / 1000))
+    local milliseconds=$((duration_ms % 1000))
+    
+    # Build the formatted string
+    local formatted=""
+    
+    if [ $hours -gt 0 ]; then
+        formatted="${hours}h ${minutes}m ${seconds}s ${milliseconds}ms"
+    elif [ $minutes -gt 0 ]; then
+        formatted="${minutes}m ${seconds}s ${milliseconds}ms"
+    elif [ $seconds -gt 0 ]; then
+        if [ $milliseconds -gt 0 ]; then
+            formatted="${seconds}.$(printf "%03d" $milliseconds)s"
+        else
+            formatted="${seconds}s"
+        fi
+    else
+        formatted="${milliseconds}ms"
+    fi
+    
+    echo "$formatted"
+}
+
+# Function: Start execution timer
+start_timer() {
+    EXECUTION_START_TIME=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time() * 1000))" 2>/dev/null || echo "0")
+}
+
+# Function: Stop timer and display execution time
+stop_timer() {
+    EXECUTION_END_TIME=$(date +%s%3N 2>/dev/null || python3 -c "import time; print(int(time.time() * 1000))" 2>/dev/null || echo "0")
+    
+    if [ "$EXECUTION_START_TIME" != "0" ] && [ "$EXECUTION_END_TIME" != "0" ]; then
+        local duration=$((EXECUTION_END_TIME - EXECUTION_START_TIME))
+        local formatted_time=$(format_execution_time $duration)
+        
+        echo ""
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${GREEN}  ⏱  Execution Time: ${YELLOW}${formatted_time}${NC}"
+        echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+    fi
+}
+
 # Function: Compile and link all .asm files and copy .sh files to /dev directory
 # This only runs if ./dev directory does NOT exist
 # COMPLETELY SILENT unless VERBOSE_DEV=true
@@ -988,6 +1043,11 @@ main_flow() {
         # NOW EXECUTE YOUR FILES USING THE JS PATH
         # ============================================
 
+         # Start execution timer if in log mode
+        if [ "$FORCE_LOG_MODE" = "true" ]; then
+            start_timer
+        fi
+
         OUTPUT_JS="$SCRIPT_DIR/output.js" 
         ARCH_OUTPUT="$SCRIPT_DIR/arch_output" 
         
@@ -1004,6 +1064,11 @@ main_flow() {
         rm_file "$SCRIPT_DIR/output.js"
         execute_file "silent" "./tree/build.sh"
         execute_file "log" "./build_output.asm"
+        
+        # Display execution time if in log mode
+        if [ "$FORCE_LOG_MODE" = "true" ]; then
+            stop_timer
+        fi
     else
         show_usage
         exit 1
