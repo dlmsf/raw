@@ -1,891 +1,518 @@
-#!/bin/bash
+#!/bin/sh
 
-# =============================================================================
-# JavaScript Parser/Formatter Script - Replicating Assembly Code Functionality
-# =============================================================================
-# Processes JavaScript files to identify and tag statements and code blocks
-# Output: Terminal (colored), File "arch_output" (no colors)
-# =============================================================================
+# Node.js Interface Analyzer - Pure Shell Script Version
+# Compatible with ash, dash, bash
 
-set -e  # Exit on error
+set -e
 
-# =============================================================================
-# COLOR DEFINITIONS (Terminal only)
-# =============================================================================
-RESET_COLOR=$'\033[0m'
-COLORS=(
-    $'\033[1;33m'  # Bright yellow
-    $'\033[1;36m'  # Bright cyan  
-    $'\033[1;32m'  # Bright green
-    $'\033[1;35m'  # Bright magenta
-)
+# Global variables
+BASE_DIR="/tmp/jsinfo"
+TIMESTAMP=$(date +%Y-%m-%dT%H-%M-%S-000Z)
+TARGET_DIR="$BASE_DIR/$TIMESTAMP"
+GENERATE_SH=0
+PATHS=""
+SCRIPT_NAME=""
 
-# =============================================================================
-# TAGS FOR OUTPUT
-# =============================================================================
-JS_START_TAG="<js-start>"
-JS_END_TAG="<js-end>"
-CHAIN_START_TAG="<chain-start>"
-CHAIN_END_TAG="<chain-end>"
-NEWLINE=$'\n'
-TAB="    "
-CHAIN_TAB="    "
-
-# =============================================================================
-# ERROR MESSAGES
-# =============================================================================
-ERR_NO_FILE="Error: No input file specified."
-ERR_OPEN="Error: Could not open file."
-ERR_READ="Error: Could not read file."
-ERR_CREATE="Error: Could not create output file."
-ERR_WRITE="Error: Could not write to output file."
-
-# =============================================================================
-# STATE VARIABLES (Matching assembly code)
-# =============================================================================
-declare -i BRACE_DEPTH=0
-declare -i PAREN_DEPTH=0
-declare -i BRACKET_DEPTH=0
-declare -i CHAIN_DEPTH=0
-declare -i CHAIN_STACK_PTR=0
-declare -i COLOR_INDEX=0
-declare -i FILE_SIZE=0
-
-declare IN_STRING=0
-declare IN_TEMPLATE=0
-declare IN_COMMENT=0  # 0=none, 1=single-line, 2=multi-line
-declare STMT_STARTED=0
-declare SKIP_NEXT_SPACE=0
-declare IN_BLOCK=0
-declare BLOCK_STARTED=0
-declare EMPTY_STATEMENT=0
-declare ARROW_PENDING=0
-declare AT_BLOCK_START=0
-declare IN_CHAIN_BLOCK=0
-declare EXPECTING_BLOCK=0
-declare BLOCK_DECLARATION=0
-declare IN_BLOCK_STMT=0
-
-# Buffers
-CURRENT_STMT=""
-BLOCK_STMT=""
-KEYWORD_BUFFER=""
-LAST_CHAR=""
-CURRENT_KEYWORD=""
-
-# Stacks for chain tracking (matching assembly)
-declare -a CHAIN_STACK=()      # Stores chain colors
-declare -a CHAIN_BRACE_STACK=() # Stores brace depth when chain started
-
-# Output buffers
-CLEAN_BUFFER=""      # For file output (no colors)
-CLEAN_BUFFER_SIZE=0
-MAX_CLEAN_BUFFER=2048
-
-# File handles
-INPUT_FILE=""
-OUTPUT_FILE="arch_output"
-OUTPUT_FD=""
-
-# =============================================================================
-# UTILITY FUNCTIONS
-# =============================================================================
-
-# Print error and exit
-error_exit() {
-    echo "$1" >&2
-    exit "${2:-1}"
-}
-
-# Get current color based on rotation
-get_next_color() {
-    local color="${COLORS[$COLOR_INDEX]}"
-    COLOR_INDEX=$(( (COLOR_INDEX + 1) % 4 ))
-    echo "$color"
-}
-
-# Get chain color (current color when chain started)
-get_chain_color() {
-    echo "${CHAIN_STACK[$((CHAIN_STACK_PTR - 1))]}"
-}
-
-# String length helper
-string_length() {
-    local str="$1"
-    echo "${#str}"
-}
-
-# Compare strings
-strings_equal() {
-    [[ "$1" == "$2" ]]
-}
-
-# Append to clean buffer (for file output)
-append_to_clean_buffer() {
-    local str="$1"
-    local len=${#str}
+# Native Node.js modules set (simulated with case statements)
+is_native_module() {
+    module="$1"
+    # Remove node: prefix if present
+    module="${module#node:}"
     
-    if (( CLEAN_BUFFER_SIZE + len >= MAX_CLEAN_BUFFER )); then
-        write_to_file
-    fi
-    
-    CLEAN_BUFFER+="$str"
-    CLEAN_BUFFER_SIZE=$((CLEAN_BUFFER_SIZE + len))
-}
-
-# Write clean buffer to output file
-write_to_file() {
-    if [[ -n "$CLEAN_BUFFER" ]]; then
-        echo -n "$CLEAN_BUFFER" >&${OUTPUT_FD} || error_exit "$ERR_WRITE" 5
-        CLEAN_BUFFER=""
-        CLEAN_BUFFER_SIZE=0
-    fi
-}
-
-# Print string (terminal with colors, file without)
-print_string() {
-    local str="$1"
-    local color="$2"
-    
-    # Skip color codes for file output
-    if [[ ! "$str" =~ ^\\033 ]]; then
-        append_to_clean_buffer "$str"
-    fi
-    
-    # Terminal output (with color if provided)
-    if [[ -n "$color" ]]; then
-        echo -n "${color}${str}${RESET_COLOR}"
-    else
-        echo -n "$str"
-    fi
-}
-
-# Clear statement buffer
-clear_stmt_buffer() {
-    CURRENT_STMT=""
-}
-
-# Clear block statement buffer
-clear_block_stmt_buffer() {
-    BLOCK_STMT=""
-}
-
-# Clear keyword buffer
-clear_keyword_buffer() {
-    KEYWORD_BUFFER=""
-}
-
-# Append to current statement
-append_to_stmt() {
-    local char="$1"
-    CURRENT_STMT+="$char"
-}
-
-# Append to keyword buffer
-append_to_keyword_buffer() {
-    local char="$1"
-    if (( ${#KEYWORD_BUFFER} < 15 )); then
-        KEYWORD_BUFFER+="$char"
-    fi
-}
-
-# Copy current statement to block statement
-copy_to_block_stmt() {
-    BLOCK_STMT="$CURRENT_STMT"
-}
-
-# Check and set block keyword
-check_and_set_block_keyword() {
-    if [[ -z "$KEYWORD_BUFFER" ]]; then
-        CURRENT_KEYWORD=0
-        return
-    fi
-    
-    case "$KEYWORD_BUFFER" in
-        "if"|"else"|"for"|"while"|"function"|"do")
-            CURRENT_KEYWORD=1
+    case "$module" in
+        assert|async_hooks|buffer|child_process|cluster|\
+        console|constants|crypto|dgram|diagnostics_channel|\
+        dns|domain|events|fs|http|http2|https|\
+        inspector|module|net|os|path|perf_hooks|\
+        process|punycode|querystring|readline|repl|\
+        stream|string_decoder|timers|tls|trace_events|\
+        tty|url|util|v8|vm|wasi|worker_threads|\
+        zlib|fs/promises|timers/promises|stream/promises|\
+        stream/consumers|stream/web|dns/promises|readline/promises)
+            return 0
             ;;
         *)
-            CURRENT_KEYWORD=0
+            return 1
             ;;
     esac
 }
 
-# Check if statement is empty
-check_empty_statement() {
-    EMPTY_STATEMENT=1
-    local stmt="$CURRENT_STMT"
+# Count native module imports in a file
+count_native_imports() {
+    file="$1"
+    tmp_output="$2"
     
-    # Remove all whitespace and semicolons
-    local cleaned="${stmt//[[:space:];]/}"
+    > "$tmp_output"
     
-    if [[ -n "$cleaned" ]]; then
-        EMPTY_STATEMENT=0
-    fi
-}
-
-# Trim trailing spaces from current statement
-trim_trailing_spaces() {
-    # Remove trailing spaces and tabs
-    CURRENT_STMT="${CURRENT_STMT%"${CURRENT_STMT##*[![:space:]]}"}"
-}
-
-# =============================================================================
-# CHARACTER PROCESSING FUNCTIONS
-# =============================================================================
-
-process_start_string() {
-    SKIP_NEXT_SPACE=0
-    EMPTY_STATEMENT=0
-    ARROW_PENDING=0
-    clear_keyword_buffer
-    append_to_stmt '"'
-    LAST_CHAR='"'
-    IN_STRING=1
-}
-
-process_start_template() {
-    SKIP_NEXT_SPACE=0
-    EMPTY_STATEMENT=0
-    ARROW_PENDING=0
-    clear_keyword_buffer
-    append_to_stmt '`'
-    LAST_CHAR='`'
-    IN_TEMPLATE=1
-}
-
-check_for_comment() {
-    if [[ "$NEXT_CHAR" == "/" ]]; then
-        IN_COMMENT=1
-        CHAR_POS=$((CHAR_POS + 1))
-    elif [[ "$NEXT_CHAR" == "*" ]]; then
-        IN_COMMENT=2
-        CHAR_POS=$((CHAR_POS + 1))
-    else
-        SKIP_NEXT_SPACE=0
-        EMPTY_STATEMENT=0
-        ARROW_PENDING=0
-        clear_keyword_buffer
-        append_to_stmt '/'
-        LAST_CHAR='/'
-    fi
-}
-
-process_space() {
-    check_and_set_block_keyword
-    clear_keyword_buffer
-    
-    if (( SKIP_NEXT_SPACE == 1 )); then
-        return
-    fi
-    
-    case "$LAST_CHAR" in
-        '('|'['|'{'|';'|':'|',')
-            # Skip space after these characters
-            ;;
-        *)
-            append_to_stmt ' '
-            SKIP_NEXT_SPACE=1
-            LAST_CHAR=' '
-            ;;
-    esac
-}
-
-process_newline() {
-    check_and_set_block_keyword
-    clear_keyword_buffer
-    SKIP_NEXT_SPACE=1
-}
-
-process_semicolon() {
-    SKIP_NEXT_SPACE=0
-    ARROW_PENDING=0
-    clear_keyword_buffer
-    append_to_stmt ';'
-    LAST_CHAR=';'
-    
-    if (( IN_CHAIN_BLOCK == 1 )); then
-        # In chain
-        check_empty_statement
-        if (( EMPTY_STATEMENT == 0 )); then
-            print_chain_statement
-            clear_stmt_buffer
-            STMT_STARTED=0
-        else
-            clear_stmt_buffer
-            STMT_STARTED=0
-            EMPTY_STATEMENT=0
-        fi
-    else
-        # Regular semicolon at top level
-        if (( BRACE_DEPTH == 0 && PAREN_DEPTH == 0 && BRACKET_DEPTH == 0 && IN_BLOCK == 0 )); then
-            check_empty_statement
-            if (( EMPTY_STATEMENT == 0 )); then
-                print_current_statement
-                clear_stmt_buffer
-                STMT_STARTED=0
-                get_next_color > /dev/null  # Just rotate color
-            else
-                clear_stmt_buffer
-                STMT_STARTED=0
-                EMPTY_STATEMENT=0
-            fi
-        fi
-    fi
-}
-
-process_open_brace() {
-    SKIP_NEXT_SPACE=0
-    ARROW_PENDING=0
-    EMPTY_STATEMENT=0
-    
-    # Check if this looks like an object literal or a block
-    if (( CURRENT_KEYWORD == 1 )); then
-        IS_BLOCK_BRACE=1
-    else
-        case "$LAST_CHAR" in
-            '='|':'|','|'('|'['|'{')
-                IS_BLOCK_BRACE=0  # Object literal
-                ;;
-            *)
-                # Check if in expression context
-                if (( PAREN_DEPTH == 0 && BRACKET_DEPTH == 0 )); then
-                    IS_BLOCK_BRACE=1  # Block
-                else
-                    IS_BLOCK_BRACE=0  # Object literal
-                fi
-                ;;
-        esac
-    fi
-    
-    if (( IS_BLOCK_BRACE == 0 )); then
-        # Object literal - add to current statement
-        append_to_stmt '{'
-        LAST_CHAR='{'
-        BRACE_DEPTH=$((BRACE_DEPTH + 1))
-    else
-        # Block start - save current statement as block declaration
-        copy_to_block_stmt
-        clear_stmt_buffer
-        STMT_STARTED=0
-        BRACE_DEPTH=$((BRACE_DEPTH + 1))
+    # Process import default from 'module'
+    grep -oE "import [a-zA-Z_][a-zA-Z0-9_]* from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
+        import_name=$(echo "$line" | sed -E "s/import ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\1/")
+        module_name=$(echo "$line" | sed -E "s/import ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\2/")
         
-        # Save current brace depth for chain
-        local prev_brace_depth=$((BRACE_DEPTH - 1))
-        
-        # Push onto chain stack
-        CHAIN_BRACE_STACK[$CHAIN_STACK_PTR]=$prev_brace_depth
-        CHAIN_STACK[$CHAIN_STACK_PTR]=$(get_next_color)
-        
-        # Start a chain
-        start_chain
-        CHAIN_STACK_PTR=$((CHAIN_STACK_PTR + 1))
-    fi
-}
-
-process_close_brace() {
-    SKIP_NEXT_SPACE=0
-    ARROW_PENDING=0
-    BRACE_DEPTH=$((BRACE_DEPTH - 1))
-    
-    if (( IN_CHAIN_BLOCK == 1 )); then
-        # Check if this ends the current chain
-        local current_idx=$((CHAIN_STACK_PTR - 1))
-        if (( BRACE_DEPTH == CHAIN_BRACE_STACK[current_idx] )); then
-            # End current chain
-            end_chain
-            CHAIN_STACK_PTR=$((CHAIN_STACK_PTR - 1))
-        else
-            # Nested brace in chain
-            append_to_stmt '}'
-            LAST_CHAR='}'
+        if is_native_module "$module_name"; then
+            clean_module=$(echo "$module_name" | sed 's/^node://')
+            echo "IMPORT|${clean_module}|import ${import_name}" >> "$tmp_output"
         fi
-    else
-        # Regular brace
-        append_to_stmt '}'
-        LAST_CHAR='}'
-        
-        # Check if top level
-        if (( BRACE_DEPTH == 0 )); then
-            check_empty_statement
-            if (( EMPTY_STATEMENT == 0 )); then
-                print_current_statement
-                clear_stmt_buffer
-                STMT_STARTED=0
-                get_next_color > /dev/null
-            else
-                clear_stmt_buffer
-                STMT_STARTED=0
-                EMPTY_STATEMENT=0
-            fi
-        fi
-    fi
-}
-
-process_open_paren() {
-    SKIP_NEXT_SPACE=0
-    EMPTY_STATEMENT=0
-    ARROW_PENDING=0
-    append_to_stmt '('
-    LAST_CHAR='('
-    PAREN_DEPTH=$((PAREN_DEPTH + 1))
-}
-
-process_close_paren() {
-    SKIP_NEXT_SPACE=0
-    EMPTY_STATEMENT=0
-    ARROW_PENDING=0
-    append_to_stmt ')'
-    LAST_CHAR=')'
-    PAREN_DEPTH=$((PAREN_DEPTH - 1))
-}
-
-process_open_bracket() {
-    SKIP_NEXT_SPACE=0
-    EMPTY_STATEMENT=0
-    ARROW_PENDING=0
-    append_to_stmt '['
-    LAST_CHAR='['
-    BRACKET_DEPTH=$((BRACKET_DEPTH + 1))
-}
-
-process_close_bracket() {
-    SKIP_NEXT_SPACE=0
-    EMPTY_STATEMENT=0
-    ARROW_PENDING=0
-    append_to_stmt ']'
-    LAST_CHAR=']'
-    BRACKET_DEPTH=$((BRACKET_DEPTH - 1))
-}
-
-process_equals() {
-    clear_keyword_buffer
-    SKIP_NEXT_SPACE=0
-    EMPTY_STATEMENT=0
-    ARROW_PENDING=1
-    append_to_stmt '='
-    LAST_CHAR='='
-}
-
-process_colon() {
-    clear_keyword_buffer
-    SKIP_NEXT_SPACE=0
-    append_to_stmt ':'
-    LAST_CHAR=':'
-}
-
-process_greater() {
-    if (( ARROW_PENDING == 1 )); then
-        # Arrow function
-        ARROW_PENDING=0
-        SKIP_NEXT_SPACE=0
-        EMPTY_STATEMENT=0
-        append_to_stmt '>'
-        LAST_CHAR='>'
-    else
-        ARROW_PENDING=0
-        SKIP_NEXT_SPACE=0
-        EMPTY_STATEMENT=0
-        append_to_stmt '>'
-        LAST_CHAR='>'
-    fi
-}
-
-handle_string_char() {
-    local char="$1"
-    append_to_stmt "$char"
-    LAST_CHAR="$char"
-    
-    if [[ "$char" == '"' ]]; then
-        # Check if escaped
-        if [[ "$PREV_CHAR" != '\\' ]]; then
-            IN_STRING=0
-        fi
-    fi
-}
-
-handle_template_char() {
-    local char="$1"
-    append_to_stmt "$char"
-    LAST_CHAR="$char"
-    
-    if [[ "$char" == '`' ]]; then
-        # Check if escaped
-        if [[ "$PREV_CHAR" != '\\' ]]; then
-            IN_TEMPLATE=0
-        fi
-    fi
-}
-
-handle_single_line_comment() {
-    local char="$1"
-    if [[ "$char" == $'\n' ]]; then
-        IN_COMMENT=0
-    fi
-}
-
-handle_multi_line_comment() {
-    local char="$1"
-    if [[ "$char" == '*' && "$NEXT_CHAR" == '/' ]]; then
-        IN_COMMENT=0
-        CHAR_POS=$((CHAR_POS + 1))  # Skip the '/'
-    fi
-}
-
-# =============================================================================
-# CHAIN MANAGEMENT
-# =============================================================================
-
-start_chain() {
-    local chain_color="${CHAIN_STACK[$((CHAIN_STACK_PTR))]}"
-    
-    # Print chain start
-    print_string "$CHAIN_START_TAG" ""
-    print_string "$NEWLINE" ""
-    
-    # Print block declaration if any
-    if [[ -n "$BLOCK_STMT" ]]; then
-        print_string "$CHAIN_TAB" ""
-        print_string "$BLOCK_STMT" ""
-        print_string "$NEWLINE" ""
-    fi
-    
-    # Set chain state
-    IN_CHAIN_BLOCK=1
-    CHAIN_DEPTH=$((CHAIN_DEPTH + 1))
-    
-    # Clear block buffer
-    clear_block_stmt_buffer
-    CURRENT_KEYWORD=0  # Reset keyword after starting chain
-}
-
-end_chain() {
-    # Print any remaining statement
-    if [[ -n "$CURRENT_STMT" ]]; then
-        check_empty_statement
-        if (( EMPTY_STATEMENT == 0 )); then
-            print_chain_statement
-            clear_stmt_buffer
-            STMT_STARTED=0
-        fi
-    fi
-    
-    EMPTY_STATEMENT=0
-    
-    # Print chain end
-    print_string "$CHAIN_END_TAG" ""
-    print_string "$NEWLINE" ""
-    
-    # Reset chain state if this was the last chain
-    CHAIN_DEPTH=$((CHAIN_DEPTH - 1))
-    
-    if (( CHAIN_DEPTH == 0 )); then
-        IN_CHAIN_BLOCK=0
-        # Get new color for next statements (just rotate)
-        get_next_color > /dev/null
-    fi
-}
-
-close_all_chains() {
-    while (( CHAIN_DEPTH > 0 )); do
-        print_string "$CHAIN_END_TAG" ""
-        print_string "$NEWLINE" ""
-        CHAIN_DEPTH=$((CHAIN_DEPTH - 1))
-        CHAIN_STACK_PTR=$((CHAIN_STACK_PTR - 1))
-    done
-    IN_CHAIN_BLOCK=0
-}
-
-# =============================================================================
-# PRINTING FUNCTIONS
-# =============================================================================
-
-print_current_statement() {
-    if [[ -z "$CURRENT_STMT" ]]; then
-        return
-    fi
-    
-    # Trim spaces
-    trim_trailing_spaces
-    
-    # Get color
-    local color
-    color=$(get_next_color)
-    
-    # Print opening tag with color to terminal, without color to file
-    print_string "$color" ""
-    print_string "$JS_START_TAG" ""
-    print_string "$RESET_COLOR" ""
-    
-    # Indentation
-    print_string "$TAB" ""
-    
-    # Statement with color to terminal, without to file
-    print_string "$color" ""
-    print_string "$CURRENT_STMT" ""
-    print_string "$RESET_COLOR" ""
-    
-    # Closing indentation and tag
-    print_string "$TAB" ""
-    
-    print_string "$color" ""
-    print_string "$JS_END_TAG" ""
-    print_string "$NEWLINE" ""
-    print_string "$RESET_COLOR" ""
-}
-
-print_chain_statement() {
-    if [[ -z "$CURRENT_STMT" ]]; then
-        return
-    fi
-    
-    # Trim spaces
-    trim_trailing_spaces
-    
-    # Get chain color from current chain
-    local chain_color
-    if (( CHAIN_STACK_PTR > 0 )); then
-        chain_color="${CHAIN_STACK[$((CHAIN_STACK_PTR - 1))]}"
-    else
-        chain_color="${COLORS[0]}"
-    fi
-    
-    # Double indentation for chain content
-    print_string "$CHAIN_TAB" ""
-    print_string "$CHAIN_TAB" ""
-    
-    # Print as js statement with color to terminal, without to file
-    print_string "$chain_color" ""
-    print_string "$JS_START_TAG" ""
-    print_string "$RESET_COLOR" ""
-    
-    # Indentation
-    print_string "$TAB" ""
-    
-    # Statement with color to terminal, without to file
-    print_string "$chain_color" ""
-    print_string "$CURRENT_STMT" ""
-    print_string "$RESET_COLOR" ""
-    
-    # Closing indentation and tag
-    print_string "$TAB" ""
-    
-    print_string "$chain_color" ""
-    print_string "$JS_END_TAG" ""
-    print_string "$NEWLINE" ""
-    print_string "$RESET_COLOR" ""
-}
-
-# =============================================================================
-# MAIN PROCESSING FUNCTION
-# =============================================================================
-
-process_file() {
-    local content="$1"
-    local length=${#content}
-    local char
-    local prev_char=""
-    
-    # Initialize state
-    BRACE_DEPTH=0
-    PAREN_DEPTH=0
-    BRACKET_DEPTH=0
-    CHAIN_DEPTH=0
-    CHAIN_STACK_PTR=0
-    IN_STRING=0
-    IN_TEMPLATE=0
-    IN_COMMENT=0
-    STMT_STARTED=0
-    LAST_CHAR=""
-    SKIP_NEXT_SPACE=0
-    IN_BLOCK=0
-    BLOCK_STARTED=0
-    EMPTY_STATEMENT=0
-    ARROW_PENDING=0
-    AT_BLOCK_START=0
-    IN_CHAIN_BLOCK=0
-    EXPECTING_BLOCK=0
-    BLOCK_DECLARATION=0
-    IN_BLOCK_STMT=0
-    CURRENT_KEYWORD=0
-    COLOR_INDEX=0
-    
-    # Clear buffers
-    clear_stmt_buffer
-    clear_block_stmt_buffer
-    clear_keyword_buffer
-    
-    # Get first color
-    get_next_color > /dev/null
-    
-    # Process character by character
-    for (( CHAR_POS=0; CHAR_POS < length; CHAR_POS++ )); do
-        char="${content:CHAR_POS:1}"
-        NEXT_CHAR=""
-        if (( CHAR_POS + 1 < length )); then
-            NEXT_CHAR="${content:CHAR_POS+1:1}"
-        fi
-        
-        # Skip whitespace at beginning of statement
-        if (( STMT_STARTED == 0 )); then
-            case "$char" in
-                ' '|$'\t'|$'\n'|$'\r')
-                    continue
-                    ;;
-            esac
-            STMT_STARTED=1
-        fi
-        
-        # Handle special contexts
-        if (( IN_STRING == 1 )); then
-            handle_string_char "$char"
-            prev_char="$char"
-            continue
-        elif (( IN_TEMPLATE == 1 )); then
-            handle_template_char "$char"
-            prev_char="$char"
-            continue
-        elif (( IN_COMMENT == 1 )); then
-            handle_single_line_comment "$char"
-            prev_char="$char"
-            continue
-        elif (( IN_COMMENT == 2 )); then
-            handle_multi_line_comment "$char"
-            prev_char="$char"
-            continue
-        fi
-        
-        # Handle special characters
-        case "$char" in
-            '"')
-                process_start_string
-                ;;
-            '`')
-                process_start_template
-                ;;
-            '/')
-                PREV_CHAR="$prev_char"
-                check_for_comment
-                ;;
-            ' '|$'\t')
-                process_space
-                ;;
-            $'\n'|$'\r')
-                process_newline
-                ;;
-            ';')
-                process_semicolon
-                ;;
-            '{')
-                process_open_brace
-                ;;
-            '}')
-                process_close_brace
-                ;;
-            '(')
-                process_open_paren
-                ;;
-            ')')
-                process_close_paren
-                ;;
-            '[')
-                process_open_bracket
-                ;;
-            ']')
-                process_close_bracket
-                ;;
-            '=')
-                process_equals
-                ;;
-            ':')
-                process_colon
-                ;;
-            '>')
-                process_greater
-                ;;
-            *)
-                # Regular character
-                SKIP_NEXT_SPACE=0
-                EMPTY_STATEMENT=0
-                ARROW_PENDING=0
-                
-                # Check if alpha char for keyword
-                if [[ "$char" =~ [a-zA-Z] ]]; then
-                    append_to_keyword_buffer "$char"
-                else
-                    # Non-alpha ends keyword
-                    check_and_set_block_keyword
-                    clear_keyword_buffer
-                fi
-                
-                append_to_stmt "$char"
-                LAST_CHAR="$char"
-                ;;
-        esac
-        
-        prev_char="$char"
     done
     
-    # Print any remaining statement
-    if [[ -n "$CURRENT_STMT" ]]; then
-        check_empty_statement
-        if (( EMPTY_STATEMENT == 0 )); then
-            if (( IN_CHAIN_BLOCK == 1 )); then
-                print_chain_statement
-            else
-                print_current_statement
-            fi
+    # Process import { named } from 'module'
+    grep -oE "import \{[^}]+\} from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
+        bindings=$(echo "$line" | sed -E 's/import \{([^}]+)\} from ['"'"'"]([^'"'"'"]+)['"'"'"]/\1/')
+        module_name=$(echo "$line" | sed -E 's/import \{([^}]+)\} from ['"'"'"]([^'"'"'"]+)['"'"'"]/\2/')
+        
+        if is_native_module "$module_name"; then
+            clean_module=$(echo "$module_name" | sed 's/^node://')
+            echo "IMPORT|${clean_module}|import { ${bindings} }" >> "$tmp_output"
         fi
-    fi
+    done
     
-    # Close any open chains
-    close_all_chains
+    # Process import * as name from 'module'
+    grep -oE "import \* as [a-zA-Z_][a-zA-Z0-9_]* from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
+        import_name=$(echo "$line" | sed -E "s/import \* as ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\1/")
+        module_name=$(echo "$line" | sed -E "s/import \* as ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\2/")
+        
+        if is_native_module "$module_name"; then
+            clean_module=$(echo "$module_name" | sed 's/^node://')
+            echo "IMPORT|${clean_module}|import * as ${import_name}" >> "$tmp_output"
+        fi
+    done
     
-    # Write any remaining data to file
-    write_to_file
+    # Process import 'module' (side effect)
+    grep -oE "import ['\"][^'\"]+['\"]" "$file" | grep -v "from" | while read -r line; do
+        module_name=$(echo "$line" | sed -E "s/import ['\"]([^'\"]+)['\"]/\1/")
+        
+        if is_native_module "$module_name"; then
+            clean_module=$(echo "$module_name" | sed 's/^node://')
+            echo "IMPORT|${clean_module}|import (side effect)" >> "$tmp_output"
+        fi
+    done
+    
+    # Process dynamic import()
+    grep -oE "import\(['\"][^'\"]+['\"]\)" "$file" | while read -r line; do
+        module_name=$(echo "$line" | sed -E "s/import\(['\"]([^'\"]+)['\"]\)/\1/")
+        
+        if is_native_module "$module_name"; then
+            clean_module=$(echo "$module_name" | sed 's/^node://')
+            echo "IMPORT|${clean_module}|import() (dynamic)" >> "$tmp_output"
+        fi
+    done
 }
 
-# =============================================================================
-# MAIN PROGRAM
-# =============================================================================
+# Extract interfaces and methods
+extract_interfaces() {
+    file="$1"
+    tmp_output="$2"
+    
+    > "$tmp_output"
+    
+    # First, extract import bindings
+    tmp_bindings="/tmp/jsinfo_bindings_$$"
+    > "$tmp_bindings"
+    
+    # Extract default imports
+    grep -oE "import [a-zA-Z_][a-zA-Z0-9_]* from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
+        import_name=$(echo "$line" | sed -E "s/import ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\1/")
+        module_name=$(echo "$line" | sed -E "s/import ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\2/" | sed 's/^node://')
+        echo "BINDING|${import_name}|${module_name}" >> "$tmp_bindings"
+    done
+    
+    # Extract namespace imports
+    grep -oE "import \* as [a-zA-Z_][a-zA-Z0-9_]* from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
+        import_name=$(echo "$line" | sed -E "s/import \* as ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\1/")
+        module_name=$(echo "$line" | sed -E "s/import \* as ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\2/" | sed 's/^node://')
+        echo "BINDING|${import_name}|${module_name}" >> "$tmp_bindings"
+    done
+    
+    # Extract named imports
+    grep -oE "import \{[^}]+\} from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
+        bindings=$(echo "$line" | sed -E 's/import \{([^}]+)\} from ['"'"'"]([^'"'"'"]+)['"'"'"]/\1/')
+        module_name=$(echo "$line" | sed -E 's/import \{([^}]+)\} from ['"'"'"]([^'"'"'"]+)['"'"'"]/\2/' | sed 's/^node://')
+        
+        # Split bindings and process each
+        echo "$bindings" | tr ',' '\n' | while read -r binding; do
+            binding=$(echo "$binding" | sed -E 's/.* as ([a-zA-Z_][a-zA-Z0-9_]*).*/\1/;t; s/^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*$/\1/')
+            echo "BINDING|${binding}|${module_name}" >> "$tmp_bindings"
+        done
+    done
+    
+    # Find method calls on imported objects: obj.method()
+    grep -oE '[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\s*\(' "$file" | while read -r line; do
+        object_name=$(echo "$line" | sed -E 's/([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/\1/')
+        method_name=$(echo "$line" | sed -E 's/([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/\2/')
+        
+        module=$(grep "^BINDING|${object_name}|" "$tmp_bindings" 2>/dev/null | head -1 | cut -d'|' -f3)
+        if [ -n "$module" ]; then
+            echo "INTERFACE|${module}|${method_name}" >> "$tmp_output"
+        fi
+    done
+    
+    # Find property access on imported objects
+    grep -oE '[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*' "$file" | grep -v '\.prototype' | while read -r line; do
+        object_name=$(echo "$line" | sed -E 's/([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)/\1/')
+        prop_name=$(echo "$line" | sed -E 's/([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)/\2/')
+        
+        module=$(grep "^BINDING|${object_name}|" "$tmp_bindings" 2>/dev/null | head -1 | cut -d'|' -f3)
+        if [ -n "$module" ]; then
+            echo "INTERFACE|${module}|${prop_name}" >> "$tmp_output"
+        fi
+    done
+    
+    rm -f "$tmp_bindings"
+}
 
+# Get unique variations per module
+get_unique_variations() {
+    input_file="$1"
+    sort -u "$input_file" | awk -F'|' '
+    {
+        module = $2
+        variation = $3
+        if (!(module in variations)) {
+            variations[module] = ""
+        }
+        if (variations[module] !~ variation) {
+            if (variations[module] == "") {
+                variations[module] = variation
+            } else {
+                variations[module] = variations[module] "|" variation
+            }
+        }
+    }
+    END {
+        for (module in variations) {
+            print module ":" variations[module]
+        }
+    }'
+}
+
+# Get unique interfaces per module
+get_unique_interfaces() {
+    input_file="$1"
+    sort -u "$input_file" | awk -F'|' '
+    {
+        module = $2
+        method = $3
+        if (!(module in methods)) {
+            methods[module] = ""
+        }
+        if (methods[module] !~ method) {
+            if (methods[module] == "") {
+                methods[module] = method
+            } else {
+                methods[module] = methods[module] "," method
+            }
+        }
+    }
+    END {
+        for (module in methods) {
+            print module ":" methods[module]
+        }
+    }'
+}
+
+# Print results to console
+print_results() {
+    import_file="$1"
+    interface_file="$2"
+    
+    if [ ! -s "$import_file" ]; then
+        echo "   No native Node.js module imports found."
+        return
+    fi
+    
+    # Get unique variations
+    variations=$(get_unique_variations "$import_file")
+    total_unique=0
+    
+    echo "$variations" | while IFS=':' read -r module vars; do
+        if [ -n "$module" ]; then
+            # Count unique variations
+            count=$(echo "$vars" | tr '|' '\n' | wc -l)
+            total_unique=$((total_unique + count))
+            
+            echo "   📦 ${module}:"
+            echo "      Unique variations: ${count}"
+            echo "      Variations:"
+            echo "$vars" | tr '|' '\n' | while read -r var; do
+                echo "        • ${var}"
+            done
+            
+            # Show interfaces for this module
+            if [ -s "$interface_file" ]; then
+                methods=$(grep "^INTERFACE|${module}|" "$interface_file" | cut -d'|' -f3 | sort -u)
+                if [ -n "$methods" ]; then
+                    method_count=$(echo "$methods" | wc -l)
+                    echo "      Methods/Interfaces (${method_count}):"
+                    echo "$methods" | while read -r method; do
+                        echo "        - ${method}"
+                    done
+                fi
+            fi
+        fi
+    done
+}
+
+# Generate shell script
+generate_shell_script() {
+    output_script="generate-jsinfo-${TIMESTAMP}.sh"
+    tmp_combined_imports="/tmp/jsinfo_combined_imports_$$"
+    tmp_combined_interfaces="/tmp/jsinfo_combined_interfaces_$$"
+    
+    > "$tmp_combined_imports"
+    > "$tmp_combined_interfaces"
+    
+    # Combine all results
+    for result_dir in /tmp/jsinfo_results_$$_*; do
+        if [ -f "${result_dir}/imports" ]; then
+            cat "${result_dir}/imports" >> "$tmp_combined_imports"
+        fi
+        if [ -f "${result_dir}/interfaces" ]; then
+            cat "${result_dir}/interfaces" >> "$tmp_combined_interfaces"
+        fi
+    done
+    
+    # Create script header
+    cat > "$output_script" << EOF
+#!/bin/sh
+# Generated by Node.js Interface Analyzer
+# Generated at: $(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+# This script creates a directory structure in /tmp/jsinfo/
+
+BASE_DIR="/tmp/jsinfo"
+TIMESTAMP="${TIMESTAMP}"
+TARGET_DIR="\$BASE_DIR/\$TIMESTAMP"
+
+echo "Creating interface directory structure in \$TARGET_DIR..."
+mkdir -p "\$TARGET_DIR"
+
+EOF
+    
+    # Process unique variations and interfaces
+    get_unique_variations "$tmp_combined_imports" > "/tmp/jsinfo_vars_$$" &
+    get_unique_interfaces "$tmp_combined_interfaces" > "/tmp/jsinfo_interfaces_$$" &
+    wait
+    
+    # Generate directory creation and README for each module
+    cat "/tmp/jsinfo_vars_$$" | while IFS=':' read -r module variations; do
+        if [ -n "$module" ]; then
+            safe_module=$(echo "$module" | tr '/' '_')
+            module_dir="\$TARGET_DIR/${safe_module}"
+            
+            cat >> "$output_script" << EOF
+echo "Creating structure for module: ${module}"
+mkdir -p "${module_dir}"
+
+EOF
+            
+            # Create README for module
+            cat >> "$output_script" << EOF
+cat > "${module_dir}/README.md" << 'MODULE_EOF'
+# Module: ${module}
+
+## Import Variations
+EOF
+            
+            # Add variations to README
+            echo "$variations" | tr '|' '\n' | sort -u | while read -r var; do
+                echo "- \`${var}\`" >> "$output_script"
+            done
+            
+            cat >> "$output_script" << EOF
+
+## Interfaces & Methods
+
+\`\`\`
+EOF
+            
+            # Get interfaces for this module
+            interfaces=$(grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2 | tr ',' '\n' | sort -u)
+            if [ -n "$interfaces" ]; then
+                echo "$interfaces" | while read -r method; do
+                    # Create method file
+                    safe_method=$(echo "$method" | sed 's/[^a-zA-Z0-9_]/_/g')
+                    echo "echo \"# Method: ${method}\" > \"${module_dir}/${safe_method}.method\"" >> "$output_script"
+                    echo "${method}()" >> "$output_script"
+                done
+            fi
+            
+            cat >> "$output_script" << EOF
+\`\`\`
+MODULE_EOF
+
+EOF
+        fi
+    done
+    
+    # Create root README
+    cat >> "$output_script" << EOF
+# Create root README
+cat > "\$TARGET_DIR/README.md" << 'ROOT_EOF'
+# Node.js Interface Analysis
+
+Generated at: \$(date)
+Total files analyzed: ${TOTAL_FILES}
+
+## Module Structure
+
+\`\`\`
+EOF
+    
+    # Add module directories to root README
+    cat "/tmp/jsinfo_vars_$$" | while IFS=':' read -r module variations; do
+        if [ -n "$module" ]; then
+            safe_module=$(echo "$module" | tr '/' '_')
+            echo "${safe_module}/" >> "$output_script"
+        fi
+    done
+    
+    cat >> "$output_script" << EOF
+\`\`\`
+ROOT_EOF
+
+echo ""
+echo "✅ Directory structure created successfully!"
+echo "📍 Location: \$TARGET_DIR"
+echo ""
+echo "Modules analyzed:"
+EOF
+    
+    # Add module summary
+    cat "/tmp/jsinfo_vars_$$" | while IFS=':' read -r module variations; do
+        if [ -n "$module" ]; then
+            count=$(echo "$variations" | tr '|' '\n' | wc -l)
+            echo "echo \"  📦 ${module}: ${count} methods/interfaces\"" >> "$output_script"
+        fi
+    done
+    
+    cat >> "$output_script" << EOF
+echo ""
+echo "To explore: cd \$TARGET_DIR && find . -type f | sort"
+EOF
+    
+    # Make script executable
+    chmod 755 "$output_script"
+    
+    # Cleanup
+    rm -f "$tmp_combined_imports" "$tmp_combined_interfaces" /tmp/jsinfo_vars_$$ /tmp/jsinfo_interfaces_$$
+    
+    echo "$output_script"
+}
+
+# Get all .js files from path
+get_js_files() {
+    input_path="$1"
+    
+    if [ ! -e "$input_path" ]; then
+        echo "Path not found: $input_path" >&2
+        return
+    fi
+    
+    if [ -f "$input_path" ]; then
+        case "$input_path" in
+            *.js) echo "$input_path" ;;
+        esac
+    elif [ -d "$input_path" ]; then
+        find "$input_path" -type f -name "*.js"
+    fi
+}
+
+# Main execution
 main() {
-    # Check for input file
-    if [[ $# -lt 1 ]]; then
-        error_exit "$ERR_NO_FILE" 1
+    TOTAL_FILES=0
+    
+    # Parse arguments
+    for arg in "$@"; do
+        case "$arg" in
+            --sh)
+                GENERATE_SH=1
+                ;;
+            *)
+                if [ -z "$PATHS" ]; then
+                    PATHS="$arg"
+                else
+                    PATHS="$PATHS $arg"
+                fi
+                ;;
+        esac
+    done
+    
+    if [ -z "$PATHS" ]; then
+        echo "❌ Please provide at least one .js file or directory"
+        echo "Usage: $0 [--sh] <file1.js> <file2.js> <dir1> ..."
+        echo "  --sh    Generate shell script that creates interface structure in /tmp/jsinfo/"
+        exit 1
     fi
     
-    INPUT_FILE="$1"
+    # Collect all JS files
+    ALL_FILES=""
+    for path in $PATHS; do
+        files=$(get_js_files "$path")
+        if [ -n "$files" ]; then
+            if [ -z "$ALL_FILES" ]; then
+                ALL_FILES="$files"
+            else
+                ALL_FILES="$ALL_FILES
+$files"
+            fi
+        fi
+    done
     
-    # Open input file
-    if [[ ! -f "$INPUT_FILE" ]]; then
-        error_exit "$ERR_OPEN" 2
+    if [ -z "$ALL_FILES" ]; then
+        echo "❌ No .js files found"
+        exit 1
     fi
     
-    # Read file content
-    CONTENT=""
-    if ! CONTENT=$(cat "$INPUT_FILE" 2>/dev/null); then
-        error_exit "$ERR_READ" 3
+    # Count files and display
+    TOTAL_FILES=$(echo "$ALL_FILES" | wc -l)
+    echo "📁 Found ${TOTAL_FILES} JavaScript file(s):"
+    echo "$ALL_FILES" | while read -r file; do
+        echo "   - ${file}"
+    done
+    echo ""
+    
+    # Create temp directory for results
+    RESULTS_DIR="/tmp/jsinfo_results_$$_0"
+    mkdir -p "$RESULTS_DIR"
+    
+    # Analyze each file
+    file_index=0
+    echo "$ALL_FILES" | while read -r file; do
+        if [ -n "$file" ]; then
+            RESULT_DIR="/tmp/jsinfo_results_$$_${file_index}"
+            mkdir -p "$RESULT_DIR"
+            
+            echo "📄 Analyzing: $(basename "$file")"
+            
+            # Count imports
+            count_native_imports "$file" "${RESULT_DIR}/imports"
+            
+            # Extract interfaces
+            extract_interfaces "$file" "${RESULT_DIR}/interfaces"
+            
+            # Print results
+            print_results "${RESULT_DIR}/imports" "${RESULT_DIR}/interfaces"
+            echo ""
+            
+            file_index=$((file_index + 1))
+        fi
+    done
+    
+    wait
+    
+    # Generate shell script if --sh flag is present
+    if [ "$GENERATE_SH" = "1" ]; then
+        echo "🔨 Generating shell script..."
+        SCRIPT_NAME=$(generate_shell_script)
+        echo "✅ Shell script generated: $SCRIPT_NAME"
+        echo ""
+        echo "📝 To create the interface structure, run:"
+        echo "   ./$SCRIPT_NAME"
+        echo ""
+        echo "📍 This will create: /tmp/jsinfo/[timestamp]/"
     fi
     
-    FILE_SIZE=${#CONTENT}
-    if (( FILE_SIZE > 65536 )); then
-        error_exit "Error: File too large (max 64KB)" 3
-    fi
-    
-    # Create output file
-    if ! exec {OUTPUT_FD}>"$OUTPUT_FILE"; then
-        error_exit "$ERR_CREATE" 4
-    fi
-    
-    # Process file
-    process_file "$CONTENT"
-    
-    # Close output file
-    eval "exec ${OUTPUT_FD}>&-"
-    
-    echo "Processing complete. Output written to $OUTPUT_FILE"
-    exit 0
+    # Cleanup temp files
+    rm -rf /tmp/jsinfo_results_$$_*
 }
 
 # Run main function
