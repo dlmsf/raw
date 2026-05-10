@@ -14,14 +14,14 @@ JSON_MODE=0
 SCRIPT_GENERATOR=0
 PATHS=""
 SCRIPT_NAME=""
+TOTAL_FILES=0
+PID=$$
 
-# Native Node.js modules set (simulated with case statements)
+# Native Node.js modules set
 is_native_module() {
     module="$1"
-    # Remove node: prefix if present
     module="${module#node:}"
     
-    # Check if it's a file import (contains . or / or starts with .)
     case "$module" in
         ./*|../*|*/*|*.js|*.mjs|*.cjs|*.json)
             return 1
@@ -46,808 +46,538 @@ is_native_module() {
     esac
 }
 
-# Count native module imports in a file
-count_native_imports() {
+# Parse all imports and extract bindings
+parse_imports() {
     file="$1"
     tmp_output="$2"
     
     > "$tmp_output"
     
-    # Process import default from 'module'
-    grep -oE "import [a-zA-Z_][a-zA-Z0-9_]* from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
-        import_name=$(echo "$line" | sed -E "s/import ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\1/")
-        module_name=$(echo "$line" | sed -E "s/import ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\2/")
+    # Pattern 1: import defaultImport from 'module'
+    grep -n "import [a-zA-Z_$][a-zA-Z0-9_$]* from ['\"][^'\"]*['\"]" "$file" 2>/dev/null | while IFS=: read -r linenum line; do
+        import_name=$(echo "$line" | sed -E "s/.*import ([a-zA-Z_\$][a-zA-Z0-9_\$]*) from ['\"]([^'\"]+)['\"].*/\1/")
+        module_name=$(echo "$line" | sed -E "s/.*import ([a-zA-Z_\$][a-zA-Z0-9_\$]*) from ['\"]([^'\"]+)['\"].*/\2/")
         
         if is_native_module "$module_name"; then
             clean_module=$(echo "$module_name" | sed 's/^node://')
-            echo "IMPORT|${clean_module}|import ${import_name}" >> "$tmp_output"
+            echo "BINDING|${import_name}|${clean_module}|default|${linenum}" >> "$tmp_output"
         fi
     done
     
-    # Process import { named } from 'module'
-    grep -oE "import \{[^}]+\} from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
-        bindings=$(echo "$line" | sed -E 's/import \{([^}]+)\} from ['"'"'"]([^'"'"'"]+)['"'"'"]/\1/')
-        module_name=$(echo "$line" | sed -E 's/import \{([^}]+)\} from ['"'"'"]([^'"'"'"]+)['"'"'"]/\2/')
+    # Pattern 2: import { named1, named2 } from 'module'
+    grep -n "import {[^}]*} from ['\"][^'\"]*['\"]" "$file" 2>/dev/null | while IFS=: read -r linenum line; do
+        bindings_part=$(echo "$line" | sed -E 's/.*import \{([^}]+)\} from ['"'"'"]([^'"'"'"]+)['"'"'"].*/\1/')
+        module_name=$(echo "$line" | sed -E 's/.*import \{([^}]+)\} from ['"'"'"]([^'"'"'"]+)['"'"'"].*/\2/')
         
         if is_native_module "$module_name"; then
             clean_module=$(echo "$module_name" | sed 's/^node://')
-            echo "IMPORT|${clean_module}|import { ${bindings} }" >> "$tmp_output"
-        fi
-    done
-    
-    # Process import * as name from 'module'
-    grep -oE "import \* as [a-zA-Z_][a-zA-Z0-9_]* from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
-        import_name=$(echo "$line" | sed -E "s/import \* as ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\1/")
-        module_name=$(echo "$line" | sed -E "s/import \* as ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\2/")
-        
-        if is_native_module "$module_name"; then
-            clean_module=$(echo "$module_name" | sed 's/^node://')
-            echo "IMPORT|${clean_module}|import * as ${import_name}" >> "$tmp_output"
-        fi
-    done
-    
-    # Process import 'module' (side effect)
-    grep -oE "import ['\"][^'\"]+['\"]" "$file" | grep -v "from" | while read -r line; do
-        module_name=$(echo "$line" | sed -E "s/import ['\"]([^'\"]+)['\"]/\1/")
-        
-        if is_native_module "$module_name"; then
-            clean_module=$(echo "$module_name" | sed 's/^node://')
-            echo "IMPORT|${clean_module}|import (side effect)" >> "$tmp_output"
-        fi
-    done
-    
-    # Process dynamic import()
-    grep -oE "import\(['\"][^'\"]+['\"]\)" "$file" | while read -r line; do
-        module_name=$(echo "$line" | sed -E "s/import\(['\"]([^'\"]+)['\"]\)/\1/")
-        
-        if is_native_module "$module_name"; then
-            clean_module=$(echo "$module_name" | sed 's/^node://')
-            echo "IMPORT|${clean_module}|import() (dynamic)" >> "$tmp_output"
-        fi
-    done
-}
-
-# Extract interfaces and methods
-extract_interfaces() {
-    file="$1"
-    tmp_output="$2"
-    
-    > "$tmp_output"
-    
-    # First, extract import bindings
-    tmp_bindings="/tmp/jsinfo_bindings_$$"
-    > "$tmp_bindings"
-    
-    # Extract default imports
-    grep -oE "import [a-zA-Z_][a-zA-Z0-9_]* from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
-        import_name=$(echo "$line" | sed -E "s/import ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\1/")
-        module_name=$(echo "$line" | sed -E "s/import ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\2/" | sed 's/^node://')
-        
-        if is_native_module "$module_name"; then
-            echo "BINDING|${import_name}|${module_name}" >> "$tmp_bindings"
-        fi
-    done
-    
-    # Extract namespace imports
-    grep -oE "import \* as [a-zA-Z_][a-zA-Z0-9_]* from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
-        import_name=$(echo "$line" | sed -E "s/import \* as ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\1/")
-        module_name=$(echo "$line" | sed -E "s/import \* as ([a-zA-Z_][a-zA-Z0-9_]*) from ['\"]([^'\"]+)['\"]/\2/" | sed 's/^node://')
-        
-        if is_native_module "$module_name"; then
-            echo "BINDING|${import_name}|${module_name}" >> "$tmp_bindings"
-        fi
-    done
-    
-    # Extract named imports
-    grep -oE "import \{[^}]+\} from ['\"][^'\"]+['\"]" "$file" | while read -r line; do
-        bindings=$(echo "$line" | sed -E 's/import \{([^}]+)\} from ['"'"'"]([^'"'"'"]+)['"'"'"]/\1/')
-        module_name=$(echo "$line" | sed -E 's/import \{([^}]+)\} from ['"'"'"]([^'"'"'"]+)['"'"'"]/\2/' | sed 's/^node://')
-        
-        if is_native_module "$module_name"; then
-            # Split bindings and process each
-            echo "$bindings" | tr ',' '\n' | while read -r binding; do
-                binding=$(echo "$binding" | sed -E 's/.* as ([a-zA-Z_][a-zA-Z0-9_]*).*/\1/;t; s/^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*$/\1/')
-                echo "BINDING|${binding}|${module_name}" >> "$tmp_bindings"
-            done
-        fi
-    done
-    
-    # Find method calls on imported objects: obj.method()
-    grep -oE '[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\s*\(' "$file" | while read -r line; do
-        object_name=$(echo "$line" | sed -E 's/([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/\1/')
-        method_name=$(echo "$line" | sed -E 's/([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/\2/')
-        
-        module=$(grep "^BINDING|${object_name}|" "$tmp_bindings" 2>/dev/null | head -1 | cut -d'|' -f3)
-        if [ -n "$module" ]; then
-            echo "INTERFACE|${module}|${method_name}" >> "$tmp_output"
-        fi
-    done
-    
-    # Find property access on imported objects
-    grep -oE '[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*' "$file" | grep -v '\.prototype' | while read -r line; do
-        object_name=$(echo "$line" | sed -E 's/([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)/\1/')
-        prop_name=$(echo "$line" | sed -E 's/([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)/\2/')
-        
-        module=$(grep "^BINDING|${object_name}|" "$tmp_bindings" 2>/dev/null | head -1 | cut -d'|' -f3)
-        if [ -n "$module" ]; then
-            echo "INTERFACE|${module}|${prop_name}" >> "$tmp_output"
-        fi
-    done
-    
-    rm -f "$tmp_bindings"
-}
-
-# Get unique variations per module with cleaned import statements
-get_unique_variations() {
-    input_file="$1"
-    sort -u "$input_file" | awk -F'|' '
-    {
-        module = $2
-        variation = $3
-        if (!(module in variations)) {
-            variations[module] = ""
-        }
-        if (variations[module] !~ variation) {
-            if (variations[module] == "") {
-                variations[module] = variation
-            } else {
-                variations[module] = variations[module] "|" variation
-            }
-        }
-    }
-    END {
-        for (module in variations) {
-            # Clean up variations to show only the import pattern
-            gsub(/import [a-zA-Z_][a-zA-Z0-9_]* from /, "import ", variations[module])
-            gsub(/import \* as [a-zA-Z_][a-zA-Z0-9_]* from /, "import * as namespace from ", variations[module])
-            print module ":" variations[module]
-        }
-    }'
-}
-
-# Get unique interfaces per module (deduplicated methods)
-get_unique_interfaces() {
-    input_file="$1"
-    sort -u "$input_file" | awk -F'|' '
-    {
-        module = $2
-        method = $3
-        if (!(module in methods)) {
-            methods[module] = ""
-        }
-        if (methods[module] !~ method) {
-            if (methods[module] == "") {
-                methods[module] = method
-            } else {
-                methods[module] = methods[module] "," method
-            }
-        }
-    }
-    END {
-        for (module in methods) {
-            # Sort methods alphabetically
-            split(methods[module], arr, ",")
-            asort(arr)
-            sorted = ""
-            for (i in arr) {
-                if (sorted == "") sorted = arr[i]
-                else sorted = sorted "," arr[i]
-            }
-            print module ":" sorted
-        }
-    }'
-}
-
-# Print results to console
-print_results() {
-    import_file="$1"
-    interface_file="$2"
-    
-    if [ ! -s "$import_file" ]; then
-        echo "   No native Node.js module imports found."
-        return
-    fi
-    
-    # Get unique variations
-    variations=$(get_unique_variations "$import_file")
-    total_unique=0
-    
-    echo "$variations" | while IFS=':' read -r module vars; do
-        if [ -n "$module" ]; then
-            # Count unique variations
-            count=$(echo "$vars" | tr '|' '\n' | wc -l)
-            total_unique=$((total_unique + count))
             
-            echo "   📦 ${module}:"
-            echo "      Unique variations: ${count}"
-            echo "      Variations:"
-            echo "$vars" | tr '|' '\n' | while read -r var; do
-                echo "        • ${var}"
-            done
-            
-            # Show interfaces for this module
-            if [ -s "$interface_file" ]; then
-                methods=$(grep "^INTERFACE|${module}|" "$interface_file" | cut -d'|' -f3 | sort -u)
-                if [ -n "$methods" ]; then
-                    method_count=$(echo "$methods" | wc -l)
-                    echo "      Methods/Interfaces (${method_count}):"
-                    echo "$methods" | while read -r method; do
-                        echo "        - ${method}"
-                    done
+            # Split on commas, handle aliases (import { orig as alias })
+            echo "$bindings_part" | tr ',' '\n' | while read -r binding; do
+                binding=$(echo "$binding" | sed -E 's/^[[:space:]]*//; s/[[:space:]]*$//')
+                
+                if echo "$binding" | grep -q " as "; then
+                    # Handle aliased import: original as alias
+                    original=$(echo "$binding" | sed -E 's/^([a-zA-Z_\$][a-zA-Z0-9_\$]*)[[:space:]]+as[[:space:]]+([a-zA-Z_\$][a-zA-Z0-9_\$]*)$/\1/')
+                    alias=$(echo "$binding" | sed -E 's/^([a-zA-Z_\$][a-zA-Z0-9_\$]*)[[:space:]]+as[[:space:]]+([a-zA-Z_\$][a-zA-Z0-9_\$]*)$/\2/')
+                    echo "BINDING|${alias}|${clean_module}|named|${linenum}" >> "$tmp_output"
+                    echo "BINDING_ORIGINAL|${alias}|${original}|${clean_module}" >> "$tmp_output"
+                else
+                    echo "BINDING|${binding}|${clean_module}|named|${linenum}" >> "$tmp_output"
+                    echo "BINDING_ORIGINAL|${binding}|${binding}|${clean_module}" >> "$tmp_output"
                 fi
+            done
+        fi
+    done
+    
+    # Pattern 3: import * as namespace from 'module'
+    grep -n "import \* as [a-zA-Z_\$][a-zA-Z0-9_\$]* from ['\"][^'\"]*['\"]" "$file" 2>/dev/null | while IFS=: read -r linenum line; do
+        import_name=$(echo "$line" | sed -E "s/.*import \* as ([a-zA-Z_\$][a-zA-Z0-9_\$]*) from ['\"]([^'\"]+)['\"].*/\1/")
+        module_name=$(echo "$line" | sed -E "s/.*import \* as ([a-zA-Z_\$][a-zA-Z0-9_\$]*) from ['\"]([^'\"]+)['\"].*/\2/")
+        
+        if is_native_module "$module_name"; then
+            clean_module=$(echo "$module_name" | sed 's/^node://')
+            echo "BINDING|${import_name}|${clean_module}|namespace|${linenum}" >> "$tmp_output"
+        fi
+    done
+    
+    # Pattern 4: import 'module' (side effect)
+    grep -n "^import ['\"][^'\"]*['\"]" "$file" 2>/dev/null | while IFS=: read -r linenum line; do
+        module_name=$(echo "$line" | sed -E "s/import ['\"]([^'\"]+)['\"];?/\1/")
+        
+        if is_native_module "$module_name"; then
+            clean_module=$(echo "$module_name" | sed 's/^node://')
+            echo "IMPORT|${clean_module}|side_effect|${linenum}" >> "$tmp_output"
+        fi
+    done
+    
+    # Pattern 5: const/let/var x = require('module')
+    grep -n "require(['\"][^'\"]*['\"])" "$file" 2>/dev/null | while IFS=: read -r linenum line; do
+        module_name=$(echo "$line" | sed -E "s/.*require\(['\"]([^'\"]+)['\"]\).*/\1/")
+        
+        if is_native_module "$module_name"; then
+            clean_module=$(echo "$module_name" | sed 's/^node://')
+            
+            # Try to extract variable name
+            varname=$(echo "$line" | sed -E 's/.*(const|let|var)[[:space:]]+([a-zA-Z_\$][a-zA-Z0-9_\$]*)[[:space:]]*=.*/\2/')
+            if [ -n "$varname" ] && [ "$varname" != "$line" ]; then
+                echo "BINDING|${varname}|${clean_module}|require|${linenum}" >> "$tmp_output"
+            else
+                echo "IMPORT|${clean_module}|require_side_effect|${linenum}" >> "$tmp_output"
             fi
         fi
     done
+    
+    # Pattern 6: dynamic import()
+    grep -n "import(['\"][^'\"]*['\"])" "$file" 2>/dev/null | while IFS=: read -r linenum line; do
+        module_name=$(echo "$line" | sed -E "s/.*import\(['\"]([^'\"]+)['\"]\).*/\1/")
+        
+        if is_native_module "$module_name"; then
+            clean_module=$(echo "$module_name" | sed 's/^node://')
+            echo "IMPORT|${clean_module}|dynamic|${linenum}" >> "$tmp_output"
+        fi
+    done
 }
 
-# Direct save to /tmp (default mode with directories)
-direct_save() {
-    TARGET_DIR="$BASE_DIR/$TIMESTAMP"
-    mkdir -p "$TARGET_DIR"
+# Track usage of imported bindings - find method calls and property access
+track_usage() {
+    file="$1"
+    bindings_file="$2"
+    tmp_output="$3"
     
-    tmp_combined_imports="/tmp/jsinfo_combined_imports_$$"
-    tmp_combined_interfaces="/tmp/jsinfo_combined_interfaces_$$"
+    > "$tmp_output"
     
-    > "$tmp_combined_imports"
-    > "$tmp_combined_interfaces"
-    
-    # Combine all results
-    for result_dir in /tmp/jsinfo_results_$$_*; do
-        if [ -f "${result_dir}/imports" ]; then
-            cat "${result_dir}/imports" >> "$tmp_combined_imports"
+    # For each binding, search for its usage in the file
+    grep "^BINDING|" "$bindings_file" 2>/dev/null | while IFS='|' read -r type binding_name module import_type linenum; do
+        if [ -z "$binding_name" ]; then
+            continue
         fi
-        if [ -f "${result_dir}/interfaces" ]; then
-            cat "${result_dir}/interfaces" >> "$tmp_combined_interfaces"
+        
+        # Skip the import line itself
+        import_line=$linenum
+        
+        # Look for usage patterns after the import
+        # Pattern: binding.method() or binding.method(args)
+        tail -n +$((import_line + 1)) "$file" 2>/dev/null | grep -n "${binding_name}\.[a-zA-Z_\$][a-zA-Z0-9_\$]*[[:space:]]*(" 2>/dev/null | while IFS=: read -r uline ucode; do
+            method=$(echo "$ucode" | sed -E "s/.*${binding_name}\.([a-zA-Z_\$][a-zA-Z0-9_\$]*)[[:space:]]*\(.*/\1/")
+            echo "METHOD|${module}|${binding_name}|${method}" >> "$tmp_output"
+        done
+        
+        # Pattern: binding.property (without method call)
+        tail -n +$((import_line + 1)) "$file" 2>/dev/null | grep -n "${binding_name}\.[a-zA-Z_\$][a-zA-Z0-9_\$]*" 2>/dev/null | grep -v "${binding_name}\.[a-zA-Z_\$][a-zA-Z0-9_\$]*[[:space:]]*(" | while IFS=: read -r uline ucode; do
+            prop=$(echo "$ucode" | sed -E "s/.*${binding_name}\.([a-zA-Z_\$][a-zA-Z0-9_\$]*).*/\1/")
+            echo "PROPERTY|${module}|${binding_name}|${prop}" >> "$tmp_output"
+        done
+        
+        # Check if binding is used as a function call
+        tail -n +$((import_line + 1)) "$file" 2>/dev/null | grep -n "[^.]${binding_name}[[:space:]]*(" 2>/dev/null | while IFS=: read -r uline ucode; do
+            echo "FUNCTION_CALL|${module}|${binding_name}|function" >> "$tmp_output"
+        done
+        
+        # Check if binding is used without . or () (assigned, compared, etc.)
+        used_line=$(tail -n +$((import_line + 1)) "$file" 2>/dev/null | grep -n "[^.]${binding_name}[^a-zA-Z0-9_\$.]" 2>/dev/null | grep -v "${binding_name}\." | grep -v "${binding_name}(" | head -1)
+        if [ -n "$used_line" ]; then
+            echo "USED|${module}|${binding_name}|general" >> "$tmp_output"
+        fi
+    done
+}
+
+# Determine if a binding represents a class/interface or a function
+classify_interface() {
+    binding_name="$1"
+    module="$2"
+    usage_file="$3"
+    
+    # Check if methods were called on this binding
+    method_count=$(grep "^METHOD|${module}|${binding_name}|" "$usage_file" 2>/dev/null | wc -l)
+    prop_count=$(grep "^PROPERTY|${module}|${binding_name}|" "$usage_file" 2>/dev/null | wc -l)
+    func_call=$(grep "^FUNCTION_CALL|${module}|${binding_name}|" "$usage_file" 2>/dev/null | wc -l)
+    
+    if [ "$method_count" -gt 0 ] || [ "$prop_count" -gt 0 ]; then
+        echo "interface"
+    elif [ "$func_call" -gt 0 ]; then
+        echo "function"
+    else
+        echo "unknown"
+    fi
+}
+
+# Extract final results per file
+extract_final_results() {
+    bindings_file="$1"
+    usage_file="$2"
+    tmp_final="$3"
+    file_index="$4"
+    
+    > "$tmp_final"
+    
+    # Create unique temp file for used modules
+    used_modules_file="/tmp/jsinfo_used_modules_${PID}_${file_index}"
+    
+    # Get all unique modules that have been used
+    if [ -s "$usage_file" ]; then
+        cut -d'|' -f2 "$usage_file" | sort -u > "$used_modules_file"
+    else
+        > "$used_modules_file"
+    fi
+    
+    while read -r module; do
+        if [ -z "$module" ]; then
+            continue
+        fi
+        
+        # Get bindings for this module that are actually used
+        bindings=$(grep "^BINDING|[^|]*|${module}|" "$bindings_file" 2>/dev/null | cut -d'|' -f2 | sort -u)
+        
+        for binding in $bindings; do
+            if [ -z "$binding" ]; then
+                continue
+            fi
+            
+            # Check if binding is used
+            is_used=$(grep -c "^[A-Z_]*|${module}|${binding}|" "$usage_file" 2>/dev/null || echo 0)
+            
+            if [ "$is_used" -gt 0 ]; then
+                # Get original name
+                original=$(grep "^BINDING_ORIGINAL|${binding}|" "$bindings_file" 2>/dev/null | cut -d'|' -f3 | head -1)
+                if [ -z "$original" ]; then
+                    original="$binding"
+                fi
+                
+                # Classify
+                type=$(classify_interface "$binding" "$module" "$usage_file")
+                
+                # Get methods
+                methods=$(grep "^METHOD|${module}|${binding}|" "$usage_file" 2>/dev/null | cut -d'|' -f4 | sort -u | tr '\n' ',' | sed 's/,$//')
+                properties=$(grep "^PROPERTY|${module}|${binding}|" "$usage_file" 2>/dev/null | cut -d'|' -f4 | sort -u | tr '\n' ',' | sed 's/,$//')
+                
+                echo "USED_INTERFACE|${module}|${original}|${binding}|${type}|${methods}|${properties}" >> "$tmp_final"
+            fi
+        done
+        
+        # Check for side-effect imports or general module usage
+        if grep -q "^IMPORT|${module}|" "$bindings_file" 2>/dev/null; then
+            echo "MODULE_IMPORT|${module}|side_effect" >> "$tmp_final"
+        fi
+        
+    done < "$used_modules_file"
+    
+    # Cleanup
+    rm -f "$used_modules_file"
+}
+
+# Print results per file
+print_file_results() {
+    final_file="$1"
+    
+    if [ ! -s "$final_file" ]; then
+        echo "   No native Node.js module usage found."
+        return
+    fi
+    
+    # Get unique modules
+    modules=$(cut -d'|' -f2 "$final_file" | sort -u)
+    
+    for module in $modules; do
+        echo "   📦 ${module}"
+        
+        # List interfaces/functions used
+        grep "^USED_INTERFACE|${module}|" "$final_file" 2>/dev/null | sort -u | while IFS='|' read -r _ _ original alias type methods properties; do
+            display_name="$original"
+            if [ "$original" != "$alias" ]; then
+                display_name="${original} (as ${alias})"
+            fi
+            
+            if [ "$type" = "interface" ]; then
+                echo "      🔹 Interface: ${display_name}"
+                
+                if [ -n "$methods" ]; then
+                    echo "         Methods:"
+                    echo "$methods" | tr ',' '\n' | sort -u | while read -r method; do
+                        if [ -n "$method" ]; then
+                            echo "            - ${method}()"
+                        fi
+                    done
+                fi
+                
+                if [ -n "$properties" ]; then
+                    echo "         Properties:"
+                    echo "$properties" | tr ',' '\n' | sort -u | while read -r prop; do
+                        if [ -n "$prop" ]; then
+                            echo "            - ${prop}"
+                        fi
+                    done
+                fi
+            elif [ "$type" = "function" ]; then
+                echo "      🔸 Function: ${display_name}()"
+            else
+                echo "      ❓ Used: ${display_name}"
+            fi
+        done
+        
+        # Module-level imports
+        grep "^MODULE_IMPORT|${module}|" "$final_file" 2>/dev/null | sort -u | while IFS='|' read -r _ _ type; do
+            echo "      📎 Module import (${type})"
+        done
+        
+        echo ""
+    done
+}
+
+# Combine all results for final output
+combine_all_results() {
+    output_dir="$1"
+    temp_dir="$2"
+    
+    tmp_combined="${temp_dir}/combined_final"
+    > "$tmp_combined"
+    
+    # Collect all final files
+    for i in $(seq 0 999); do
+        result_file="${temp_dir}/final_${i}"
+        if [ -f "$result_file" ]; then
+            cat "$result_file" >> "$tmp_combined" 2>/dev/null
+        else
+            break
         fi
     done
     
-    # Get unique data
-    get_unique_interfaces "$tmp_combined_interfaces" > "/tmp/jsinfo_interfaces_$$"
-    total_unique_methods=$(cut -d':' -f2 "/tmp/jsinfo_interfaces_$$" | tr ',' '\n' | grep -v '^$' | sort -u | wc -l)
+    if [ ! -s "$tmp_combined" ]; then
+        echo "No results to combine."
+        return
+    fi
     
-    echo "💾 Saving directly to: $TARGET_DIR"
+    # Get unique interfaces per module with their methods
+    sort -u "$tmp_combined" > "${output_dir}/all_results.txt"
     
-    # Process each module
-    get_unique_variations "$tmp_combined_imports" | while IFS=':' read -r module variations; do
-        if [ -n "$module" ]; then
-            safe_module=$(echo "$module" | tr '/' '_')
-            module_dir="$TARGET_DIR/${safe_module}"
-            mkdir -p "$module_dir"
-            
-            # Create README for module
-            cat > "$module_dir/README.md" << MODULE_EOF
-# Module: ${module}
-
-## Import Variations
-$(echo "$variations" | tr '|' '\n' | sort -u | sed 's/^/- `/; s/$/`/')
-
-## Methods
-$(grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2 | tr ',' '\n' | sort -u | sed 's/^/- /')
-
-MODULE_EOF
-            
-            # Create individual method files
-            grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2 | tr ',' '\n' | sort -u | while read -r method; do
-                if [ -n "$method" ]; then
-                    safe_method=$(echo "$method" | sed 's/[^a-zA-Z0-9_]/_/g')
-                    echo "# Method: ${method}()" > "$module_dir/${safe_method}.method"
-                fi
-            done
+    # Build summary per module
+    > "${output_dir}/module_summary.txt"
+    
+    modules=$(cut -d'|' -f2 "$tmp_combined" | sort -u)
+    
+    for module in $modules; do
+        if [ -z "$module" ]; then
+            continue
         fi
+        
+        # Get unique interfaces for this module
+        interfaces=$(grep "^USED_INTERFACE|${module}|" "$tmp_combined" 2>/dev/null | cut -d'|' -f3,5 | sort -u)
+        
+        echo "MODULE|${module}" >> "${output_dir}/module_summary.txt"
+        
+        echo "$interfaces" | while IFS='|' read -r name type; do
+            if [ -z "$name" ]; then
+                continue
+            fi
+            
+            # Collect ALL methods for this interface across all files
+            all_methods=$(grep "^USED_INTERFACE|${module}|${name}|" "$tmp_combined" 2>/dev/null | cut -d'|' -f6 | tr ',' '\n' | sort -u | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
+            all_props=$(grep "^USED_INTERFACE|${module}|${name}|" "$tmp_combined" 2>/dev/null | cut -d'|' -f7 | tr ',' '\n' | sort -u | grep -v '^$' | tr '\n' ',' | sed 's/,$//')
+            
+            echo "INTERFACE|${name}|${type}|${all_methods}|${all_props}" >> "${output_dir}/module_summary.txt"
+        done
+    done
+}
+
+# Save results as directory structure
+save_as_structure() {
+    summary_file="$1"
+    output_dir="$2"
+    
+    mkdir -p "$output_dir"
+    
+    current_module=""
+    
+    cat "$summary_file" | while IFS='|' read -r type data1 data2 data3 data4; do
+        case "$type" in
+            MODULE)
+                current_module="$data1"
+                safe_module=$(echo "$current_module" | tr '/' '_')
+                module_dir="${output_dir}/${safe_module}"
+                mkdir -p "$module_dir"
+                
+                # Initialize module README
+                cat > "${module_dir}/README.md" << EOF
+# Module: ${current_module}
+
+## Interfaces & Functions
+
+EOF
+                ;;
+            INTERFACE)
+                name="$data1"
+                itype="$data2"
+                methods="$data3"
+                props="$data4"
+                
+                if [ -z "$current_module" ]; then
+                    continue
+                fi
+                
+                safe_module=$(echo "$current_module" | tr '/' '_')
+                module_dir="${output_dir}/${safe_module}"
+                
+                if [ "$itype" = "interface" ]; then
+                    echo "### 🔹 ${name} (Interface)" >> "${module_dir}/README.md"
+                    
+                    if [ -n "$methods" ] && [ "$methods" != "" ]; then
+                        echo "" >> "${module_dir}/README.md"
+                        echo "**Methods:**" >> "${module_dir}/README.md"
+                        echo "$methods" | tr ',' '\n' | sort -u | while read -r method; do
+                            if [ -n "$method" ]; then
+                                echo "- \`${method}()\`" >> "${module_dir}/README.md"
+                                # Create method file
+                                safe_method=$(echo "$method" | sed 's/[^a-zA-Z0-9_]/_/g')
+                                echo "# ${name}.${method}()" > "${module_dir}/${safe_method}.method"
+                            fi
+                        done
+                    fi
+                    
+                    if [ -n "$props" ] && [ "$props" != "" ]; then
+                        echo "" >> "${module_dir}/README.md"
+                        echo "**Properties:**" >> "${module_dir}/README.md"
+                        echo "$props" | tr ',' '\n' | sort -u | while read -r prop; do
+                            if [ -n "$prop" ]; then
+                                echo "- \`${prop}\`" >> "${module_dir}/README.md"
+                            fi
+                        done
+                    fi
+                    
+                    echo "" >> "${module_dir}/README.md"
+                    
+                elif [ "$itype" = "function" ]; then
+                    echo "### 🔸 ${name}() (Function)" >> "${module_dir}/README.md"
+                    echo "" >> "${module_dir}/README.md"
+                    safe_name=$(echo "$name" | sed 's/[^a-zA-Z0-9_]/_/g')
+                    echo "# Function: ${name}()" > "${module_dir}/${safe_name}.function"
+                fi
+                ;;
+        esac
     done
     
     # Create root README
-    cat > "$TARGET_DIR/README.md" << ROOT_EOF
+    total_modules=$(grep "^MODULE|" "$summary_file" 2>/dev/null | wc -l)
+    
+    cat > "${output_dir}/README.md" << EOF
 # Node.js Interface Analysis
 
 **Generated:** $(date)
 **Files analyzed:** ${TOTAL_FILES}
-**Unique methods:** ${total_unique_methods}
+**Total modules used:** ${total_modules}
 
-## Modules Overview
+## Modules
 
-$(get_unique_variations "$tmp_combined_imports" | while IFS=':' read -r module variations; do
-    if [ -n "$module" ]; then
-        method_count=$(grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2 | tr ',' '\n' | grep -v '^$' | wc -l)
-        echo "- 📦 **${module}** (${method_count} methods)"
-    fi
-done)
-
----
-*Generated by Node.js Interface Analyzer*
-ROOT_EOF
+EOF
     
-    echo "✅ Data saved directly to: $TARGET_DIR"
-    echo "📄 Root README: $TARGET_DIR/README.md"
-    
-    # Cleanup
-    rm -f "$tmp_combined_imports" "$tmp_combined_interfaces" /tmp/jsinfo_interfaces_$$
-}
-
-# Direct JSON save to /tmp
-direct_json_save() {
-    TARGET_DIR="$BASE_DIR/json/$TIMESTAMP"
-    mkdir -p "$TARGET_DIR/modules"
-    
-    tmp_combined_imports="/tmp/jsinfo_combined_imports_$$"
-    tmp_combined_interfaces="/tmp/jsinfo_combined_interfaces_$$"
-    
-    > "$tmp_combined_imports"
-    > "$tmp_combined_interfaces"
-    
-    # Combine all results
-    for result_dir in /tmp/jsinfo_results_$$_*; do
-        if [ -f "${result_dir}/imports" ]; then
-            cat "${result_dir}/imports" >> "$tmp_combined_imports"
-        fi
-        if [ -f "${result_dir}/interfaces" ]; then
-            cat "${result_dir}/interfaces" >> "$tmp_combined_interfaces"
-        fi
+    grep "^MODULE|" "$summary_file" 2>/dev/null | while IFS='|' read -r _ module; do
+        safe_module=$(echo "$module" | tr '/' '_')
+        iface_count=$(grep "INTERFACE|" "$summary_file" 2>/dev/null | grep "|interface|" | wc -l)
+        func_count=$(grep "INTERFACE|" "$summary_file" 2>/dev/null | grep "|function|" | wc -l)
+        echo "- 📦 **${module}** (${iface_count} interfaces, ${func_count} functions)" >> "${output_dir}/README.md"
     done
     
-    # Get unique data
-    get_unique_variations "$tmp_combined_imports" > "/tmp/jsinfo_vars_$$"
-    get_unique_interfaces "$tmp_combined_interfaces" > "/tmp/jsinfo_interfaces_$$"
+    echo "" >> "${output_dir}/README.md"
+    echo "---" >> "${output_dir}/README.md"
+    echo "*Generated by Node.js Interface Analyzer*" >> "${output_dir}/README.md"
+}
+
+# Save as JSON
+save_as_json() {
+    summary_file="$1"
+    output_dir="$2"
     
-    total_unique_methods=$(cut -d':' -f2 "/tmp/jsinfo_interfaces_$$" | tr ',' '\n' | grep -v '^$' | sort -u | wc -l)
-    total_modules=$(cat "/tmp/jsinfo_vars_$$" | grep -c '^[^:]\+:')
+    mkdir -p "$output_dir"
     
-    echo "💾 Saving JSON directly to: $TARGET_DIR"
+    json_file="${output_dir}/analysis.json"
     
-    # Build main JSON
-    cat > "$TARGET_DIR/analysis.json" << MAIN_EOF
+    total_modules=$(grep "^MODULE|" "$summary_file" 2>/dev/null | wc -l)
+    
+    # Start JSON
+    cat > "$json_file" << EOF
 {
   "metadata": {
     "generated": "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)",
     "files_analyzed": ${TOTAL_FILES},
-    "total_unique_methods": ${total_unique_methods},
-    "total_modules": ${total_modules}
-  },
-  "modules": {
-MAIN_EOF
-    
-    # Add each module
-    first=1
-    cat "/tmp/jsinfo_vars_$$" | while IFS=':' read -r module variations; do
-        if [ -n "$module" ]; then
-            # Get methods for this module
-            methods_line=$(grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2)
-            
-            # Create methods array
-            if [ -n "$methods_line" ]; then
-                methods_array=$(echo "$methods_line" | tr ',' '\n' | sed 's/^/      "/; s/$/"/' | paste -sd ',' -)
-            else
-                methods_array=""
-            fi
-            
-            # Create variations array (clean)
-            variations_array=$(echo "$variations" | tr '|' '\n' | sed 's/^/      "/; s/$/"/' | paste -sd ',' -)
-            
-            # Add to JSON
-            if [ $first -eq 1 ]; then
-                echo "    \"${module}\": {" >> "$TARGET_DIR/analysis.json"
-                first=0
-            else
-                echo "    \"${module}\": {" >> "$TARGET_DIR/analysis.json"
-            fi
-            
-            echo "      \"methods\": [${methods_array}]," >> "$TARGET_DIR/analysis.json"
-            echo "      \"import_variations\": [${variations_array}]" >> "$TARGET_DIR/analysis.json"
-            echo "    }," >> "$TARGET_DIR/analysis.json"
-        fi
-    done
-    
-    # Remove trailing comma and close
-    sed -i '$ s/,$//' "$TARGET_DIR/analysis.json"
-    echo "  }" >> "$TARGET_DIR/analysis.json"
-    echo "}" >> "$TARGET_DIR/analysis.json"
-    
-    # Create individual module files with cleaner structure
-    cat "/tmp/jsinfo_vars_$$" | while IFS=':' read -r module variations; do
-        if [ -n "$module" ]; then
-            safe_module=$(echo "$module" | sed 's/\//_/g')
-            methods_line=$(grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2)
-            
-            # Create methods array
-            if [ -n "$methods_line" ]; then
-                methods_array=$(echo "$methods_line" | tr ',' '\n' | sed 's/^/    "/; s/$/"/' | paste -sd ',' -)
-            else
-                methods_array=""
-            fi
-            
-            # Create variations array
-            variations_array=$(echo "$variations" | tr '|' '\n' | sed 's/^/    "/; s/$/"/' | paste -sd ',' -)
-            
-            cat > "$TARGET_DIR/modules/${safe_module}.json" << MODULE_EOF
-{
-  "module_name": "${module}",
-  "total_methods": $(echo "$methods_line" | tr ',' '\n' | grep -v '^$' | wc -l),
-  "methods": [${methods_array}],
-  "import_variations": [${variations_array}]
-}
-MODULE_EOF
-        fi
-    done
-    
-    # Create summary JSON
-    cat > "$TARGET_DIR/summary.json" << SUMMARY_EOF
-{
-  "statistics": {
-    "total_modules": ${total_modules},
-    "total_unique_methods": ${total_unique_methods},
-    "total_files_analyzed": ${TOTAL_FILES},
-    "generation_timestamp": "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)",
-    "output_format": "json"
-  },
-  "module_list": [
-$(cat "/tmp/jsinfo_vars_$$" | while IFS=':' read -r module variations; do
-    if [ -n "$module" ]; then
-        method_count=$(grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2 | tr ',' '\n' | grep -v '^$' | wc -l)
-        echo "    { \"name\": \"${module}\", \"method_count\": ${method_count} },"
-    fi
-done | sed '$ s/,$//')
-  ]
-}
-SUMMARY_EOF
-    
-    echo "✅ JSON saved directly to: $TARGET_DIR"
-    echo "📄 Main file: $TARGET_DIR/analysis.json"
-    echo "📊 Summary: $TARGET_DIR/summary.json"
-    
-    # Cleanup
-    rm -f "$tmp_combined_imports" "$tmp_combined_interfaces" /tmp/jsinfo_vars_$$ /tmp/jsinfo_interfaces_$$
-}
-
-# Generate shell script (script generator mode)
-generate_shell_script() {
-    output_script="generate-jsinfo-${TIMESTAMP}.sh"
-    tmp_combined_imports="/tmp/jsinfo_combined_imports_$$"
-    tmp_combined_interfaces="/tmp/jsinfo_combined_interfaces_$$"
-    
-    > "$tmp_combined_imports"
-    > "$tmp_combined_interfaces"
-    
-    # Combine all results
-    for result_dir in /tmp/jsinfo_results_$$_*; do
-        if [ -f "${result_dir}/imports" ]; then
-            cat "${result_dir}/imports" >> "$tmp_combined_imports"
-        fi
-        if [ -f "${result_dir}/interfaces" ]; then
-            cat "${result_dir}/interfaces" >> "$tmp_combined_interfaces"
-        fi
-    done
-    
-    # Get unique variations and count total unique methods
-    total_unique_methods=0
-    get_unique_interfaces "$tmp_combined_interfaces" > "/tmp/jsinfo_interfaces_$$"
-    total_unique_methods=$(cut -d':' -f2 "/tmp/jsinfo_interfaces_$$" | tr ',' '\n' | grep -v '^$' | sort -u | wc -l)
-    
-    # Create script header
-    cat > "$output_script" << EOF
-#!/bin/sh
-# Generated by Node.js Interface Analyzer
-# Generated at: $(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
-# This script creates a directory structure in /tmp/jsinfo/
-
-BASE_DIR="/tmp/jsinfo"
-TIMESTAMP="${TIMESTAMP}"
-TARGET_DIR="\$BASE_DIR/\$TIMESTAMP"
-
-echo "Creating interface directory structure in \$TARGET_DIR..."
-mkdir -p "\$TARGET_DIR"
-
-EOF
-    
-    # Process unique variations and interfaces
-    get_unique_variations "$tmp_combined_imports" > "/tmp/jsinfo_vars_$$" &
-    wait
-    
-    # Generate directory creation and README for each module
-    cat "/tmp/jsinfo_vars_$$" | while IFS=':' read -r module variations; do
-        if [ -n "$module" ]; then
-            safe_module=$(echo "$module" | tr '/' '_')
-            module_dir="\$TARGET_DIR/${safe_module}"
-            
-            cat >> "$output_script" << EOF
-echo "Creating structure for module: ${module}"
-mkdir -p "${module_dir}"
-
-EOF
-            
-            # Create README for module
-            cat >> "$output_script" << EOF
-cat > "${module_dir}/README.md" << 'MODULE_EOF'
-# Module: ${module}
-
-## Import Variations
-EOF
-            
-            # Add variations to README
-            echo "$variations" | tr '|' '\n' | sort -u | while read -r var; do
-                echo "- \`${var}\`" >> "$output_script"
-            done
-            
-            cat >> "$output_script" << EOF
-
-## Interfaces & Methods
-
-\`\`\`
-EOF
-            
-            # Get interfaces for this module
-            interfaces=$(grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2 | tr ',' '\n' | sort -u)
-            if [ -n "$interfaces" ]; then
-                echo "$interfaces" | while read -r method; do
-                    # Create method file
-                    safe_method=$(echo "$method" | sed 's/[^a-zA-Z0-9_]/_/g')
-                    echo "echo \"# Method: ${method}\" > \"${module_dir}/${safe_method}.method\"" >> "$output_script"
-                    echo "${method}()" >> "$output_script"
-                done
-            fi
-            
-            cat >> "$output_script" << EOF
-\`\`\`
-MODULE_EOF
-
-EOF
-        fi
-    done
-    
-    # Create root README with minimalistic tree view
-    cat >> "$output_script" << EOF
-# Create root README
-cat > "\$TARGET_DIR/README.md" << 'ROOT_EOF'
-# Node.js Interface Analysis
-
-**Generated:** \$(date)
-**Files analyzed:** ${TOTAL_FILES}
-**Unique methods:** ${total_unique_methods}
-
-## Modules Overview
-
-\`\`\`
-EOF
-    
-    # Add minimalistic tree view (one line per module with method count)
-    cat "/tmp/jsinfo_vars_$$" | while IFS=':' read -r module variations; do
-        if [ -n "$module" ]; then
-            method_count=$(grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2 | tr ',' '\n' | grep -v '^$' | wc -l)
-            echo "📦 ${module}/ (${method_count} methods)" >> "$output_script"
-        fi
-    done
-    
-    cat >> "$output_script" << EOF
-\`\`\`
-
-## Quick Stats
-
-- **Total modules:** $(cat "/tmp/jsinfo_vars_$$" | grep -c '^[^:]\+:')
-- **Generated:** \$(date -u +%Y-%m-%d)
-- **Format:** One directory per module with .method files
-
-ROOT_EOF
-
-echo ""
-echo "✅ Directory structure created successfully!"
-echo "📍 Location: \$TARGET_DIR"
-echo ""
-echo "Modules analyzed:"
-EOF
-    
-    # Add module summary
-    cat "/tmp/jsinfo_vars_$$" | while IFS=':' read -r module variations; do
-        if [ -n "$module" ]; then
-            method_count=$(grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2 | tr ',' '\n' | grep -v '^$' | wc -l)
-            echo "echo \"  📦 ${module}: ${method_count} methods\"" >> "$output_script"
-        fi
-    done
-    
-    cat >> "$output_script" << EOF
-echo ""
-echo "To explore: cd \$TARGET_DIR && find . -type f | sort"
-EOF
-    
-    # Make script executable
-    chmod 755 "$output_script"
-    
-    # Cleanup
-    rm -f "$tmp_combined_imports" "$tmp_combined_interfaces" /tmp/jsinfo_vars_$$ /tmp/jsinfo_interfaces_$$
-    
-    echo "$output_script"
-}
-
-# Generate JSON shell script (script generator mode for JSON)
-generate_json_script() {
-    output_script="generate-jsinfo-json-${TIMESTAMP}.sh"
-    tmp_combined_imports="/tmp/jsinfo_combined_imports_$$"
-    tmp_combined_interfaces="/tmp/jsinfo_combined_interfaces_$$"
-    
-    > "$tmp_combined_imports"
-    > "$tmp_combined_interfaces"
-    
-    # Combine all results
-    for result_dir in /tmp/jsinfo_results_$$_*; do
-        if [ -f "${result_dir}/imports" ]; then
-            cat "${result_dir}/imports" >> "$tmp_combined_imports"
-        fi
-        if [ -f "${result_dir}/interfaces" ]; then
-            cat "${result_dir}/interfaces" >> "$tmp_combined_interfaces"
-        fi
-    done
-    
-    # Get unique data
-    get_unique_variations "$tmp_combined_imports" > "/tmp/jsinfo_vars_$$"
-    get_unique_interfaces "$tmp_combined_interfaces" > "/tmp/jsinfo_interfaces_$$"
-    
-    # Count total unique methods
-    total_unique_methods=$(cut -d':' -f2 "/tmp/jsinfo_interfaces_$$" | tr ',' '\n' | grep -v '^$' | sort -u | wc -l)
-    total_modules=$(cat "/tmp/jsinfo_vars_$$" | grep -c '^[^:]\+:')
-    
-    # Create JSON script
-    cat > "$output_script" << 'EOF'
-#!/bin/sh
-# Generated by Node.js Interface Analyzer (JSON mode)
-EOF
-
-    cat >> "$output_script" << EOF
-# Generated at: $(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
-
-BASE_DIR="/tmp/jsinfo/json"
-TIMESTAMP="${TIMESTAMP}"
-TARGET_DIR="\$BASE_DIR/\$TIMESTAMP"
-
-echo "Creating JSON structure in \$TARGET_DIR..."
-mkdir -p "\$TARGET_DIR/modules"
-
-EOF
-
-    # Start building the main JSON file
-    cat > "/tmp/jsinfo_main_json_$$" << EOF
-{
-  "metadata": {
-    "generated": "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)",
-    "files_analyzed": ${TOTAL_FILES},
-    "total_unique_methods": ${total_unique_methods},
     "total_modules": ${total_modules}
   },
   "modules": {
 EOF
-
-    # Add each module to JSON
+    
     first_module=1
-    cat "/tmp/jsinfo_vars_$$" | while IFS=':' read -r module variations; do
-        if [ -n "$module" ]; then
-            # Get methods for this module
-            methods_line=$(grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2)
-            
-            # Build methods array
-            if [ -n "$methods_line" ]; then
-                method_array=$(echo "$methods_line" | tr ',' '\n' | sed 's/^/      "/; s/$/"/' | paste -sd ',' -)
-            else
-                method_array=""
-            fi
-            
-            # Build variations array
-            variation_array=$(echo "$variations" | tr '|' '\n' | sed 's/^/      "/; s/$/"/' | paste -sd ',' -)
-            
-            # Add comma if not first module
-            if [ $first_module -eq 1 ]; then
-                echo "    \"${module}\": {" >> "/tmp/jsinfo_main_json_$$"
-                first_module=0
-            else
-                echo "    \"${module}\": {" >> "/tmp/jsinfo_main_json_$$"
-            fi
-            
-            echo "      \"methods\": [${method_array}]," >> "/tmp/jsinfo_main_json_$$"
-            echo "      \"import_variations\": [${variation_array}]" >> "/tmp/jsinfo_main_json_$$"
-            echo "    }," >> "/tmp/jsinfo_main_json_$$"
+    grep "^MODULE|" "$summary_file" 2>/dev/null | while IFS='|' read -r _ module; do
+        if [ -z "$module" ]; then
+            continue
         fi
+        
+        # Get interfaces for this module from summary
+        module_interfaces=$(grep "^INTERFACE|[^|]*|[^|]*|" "$summary_file" 2>/dev/null || true)
+        
+        # Build module entry
+        if [ $first_module -eq 1 ]; then
+            first_module=0
+        else
+            echo "    }," >> "$json_file"
+        fi
+        
+        echo "    \"${module}\": {" >> "$json_file"
+        echo "      \"interfaces\": [" >> "$json_file"
+        
+        first_iface=1
+        echo "$module_interfaces" | while IFS='|' read -r _ name type methods props; do
+            if [ -z "$name" ]; then
+                continue
+            fi
+            
+            if [ $first_iface -eq 1 ]; then
+                first_iface=0
+            else
+                echo "        }," >> "$json_file"
+            fi
+            
+            echo "        {" >> "$json_file"
+            echo "          \"name\": \"${name}\"," >> "$json_file"
+            echo "          \"type\": \"${type}\"," >> "$json_file"
+            
+            # Methods array
+            if [ -n "$methods" ]; then
+                echo "          \"methods\": [" >> "$json_file"
+                echo "$methods" | tr ',' '\n' | grep -v '^$' | sort -u | while read -r method; do
+                    echo "            \"${method}\"," >> "$json_file"
+                done
+                # Remove trailing comma from last method
+                sed -i '$ s/,$//' "$json_file"
+                echo "          ]," >> "$json_file"
+            else
+                echo "          \"methods\": []," >> "$json_file"
+            fi
+            
+            # Properties array
+            if [ -n "$props" ]; then
+                echo "          \"properties\": [" >> "$json_file"
+                echo "$props" | tr ',' '\n' | grep -v '^$' | sort -u | while read -r prop; do
+                    echo "            \"${prop}\"," >> "$json_file"
+                done
+                sed -i '$ s/,$//' "$json_file"
+                echo "          ]" >> "$json_file"
+            else
+                echo "          \"properties\": []" >> "$json_file"
+            fi
+        done
+        
+        echo "        }" >> "$json_file"
+        echo "      ]" >> "$json_file"
     done
     
-    # Remove trailing comma from last module
-    sed -i '$ s/,$//' "/tmp/jsinfo_main_json_$$"
+    # Close last module and JSON
+    echo "    }" >> "$json_file"
+    echo "  }" >> "$json_file"
+    echo "}" >> "$json_file"
     
-    # Close JSON
-    cat >> "/tmp/jsinfo_main_json_$$" << EOF
-  }
-}
-EOF
-
-    # Add JSON content to script
-    echo "cat > \"\$TARGET_DIR/analysis.json\" << 'MAIN_JSON_EOF'" >> "$output_script"
-    cat "/tmp/jsinfo_main_json_$$" >> "$output_script"
-    echo "MAIN_JSON_EOF" >> "$output_script"
-    echo "" >> "$output_script"
-
-    # Create individual module JSON files
-    cat "/tmp/jsinfo_vars_$$" | while IFS=':' read -r module variations; do
-        if [ -n "$module" ]; then
-            safe_module=$(echo "$module" | sed 's/\//_/g')
-            methods_line=$(grep "^${module}:" "/tmp/jsinfo_interfaces_$$" 2>/dev/null | cut -d':' -f2)
-            
-            # Build methods array
-            if [ -n "$methods_line" ]; then
-                method_array=$(echo "$methods_line" | tr ',' '\n' | sed 's/^/    "/; s/$/"/' | paste -sd ',' -)
-            else
-                method_array=""
-            fi
-            
-            # Build variations array
-            variation_array=$(echo "$variations" | tr '|' '\n' | sed 's/^/    "/; s/$/"/' | paste -sd ',' -)
-            
-            cat >> "$output_script" << MODULE_EOF
-cat > "\$TARGET_DIR/modules/${safe_module}.json" << MODULE_JSON_EOF
-{
-  "module_name": "${module}",
-  "total_methods": $(echo "$methods_line" | tr ',' '\n' | grep -v '^$' | wc -l),
-  "methods": [${method_array}],
-  "import_variations": [${variation_array}]
-}
-MODULE_JSON_EOF
-
-MODULE_EOF
-        fi
-    done
-
-    # Create summary JSON
-    cat >> "$output_script" << SUMMARY_EOF
-
-# Create summary JSON
-cat > "\$TARGET_DIR/summary.json" << 'SUMMARY_JSON_EOF'
-{
-  "statistics": {
-    "total_modules": ${total_modules},
-    "total_methods": ${total_unique_methods},
-    "files_analyzed": ${TOTAL_FILES},
-    "generated": "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
-  }
-}
-SUMMARY_JSON_EOF
-
-echo ""
-echo "✅ JSON structure created successfully!"
-echo "📍 Location: \$TARGET_DIR"
-echo ""
-echo "Files created:"
-echo "  - analysis.json (complete analysis)"
-echo "  - summary.json (quick overview)"
-echo "  - modules/*.json (one per module)"
-echo ""
-echo "To explore: cd \$TARGET_DIR && ls -la"
-
-SUMMARY_EOF
-
-    # Make script executable
-    chmod 755 "$output_script"
-    
-    # Cleanup
-    rm -f "$tmp_combined_imports" "$tmp_combined_interfaces" /tmp/jsinfo_vars_$$ /tmp/jsinfo_interfaces_$$ /tmp/jsinfo_main_json_$$
-    
-    echo "$output_script"
-}
-
-# Get all .js files from path
-get_js_files() {
-    input_path="$1"
-    
-    if [ ! -e "$input_path" ]; then
-        echo "Path not found: $input_path" >&2
-        return
-    fi
-    
-    if [ -f "$input_path" ]; then
-        case "$input_path" in
-            *.js|*.mjs|*.cjs) echo "$input_path" ;;
-        esac
-    elif [ -d "$input_path" ]; then
-        find "$input_path" -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.cjs" \)
-    fi
+    echo "✅ JSON saved to: $json_file"
 }
 
 # Main execution
 main() {
-    TOTAL_FILES=0
-    
     # Parse arguments
     for arg in "$@"; do
         case "$arg" in
@@ -875,23 +605,25 @@ main() {
         echo "Usage: $0 [--sh] [--json] [--script-generator] <file1.js> <file2.js> <dir1> ..."
         echo "  --sh                  Generate directory structure with .method files"
         echo "  --json                Generate JSON output"
-        echo "  --script-generator    Generate .sh script instead of saving directly (optional)"
-        echo ""
-        echo "Default behavior (without --script-generator): Saves directly to /tmp/jsinfo/"
-        echo "With --script-generator: Creates a .sh script that you can run later"
+        echo "  --script-generator    Generate .sh script instead of saving directly"
         exit 1
     fi
     
-    # Collect all JS files
+    # Collect all JS files into a variable (avoid subshell)
     ALL_FILES=""
     for path in $PATHS; do
-        files=$(get_js_files "$path")
-        if [ -n "$files" ]; then
-            if [ -z "$ALL_FILES" ]; then
-                ALL_FILES="$files"
-            else
-                ALL_FILES="$ALL_FILES
-$files"
+        if [ -f "$path" ]; then
+            case "$path" in
+                *.js|*.mjs|*.cjs)
+                    ALL_FILES="${ALL_FILES}${path}
+"
+                    ;;
+            esac
+        elif [ -d "$path" ]; then
+            found=$(find "$path" -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.cjs" \) 2>/dev/null)
+            if [ -n "$found" ]; then
+                ALL_FILES="${ALL_FILES}${found}
+"
             fi
         fi
     done
@@ -901,79 +633,72 @@ $files"
         exit 1
     fi
     
-    # Count files and display
-    TOTAL_FILES=$(echo "$ALL_FILES" | wc -l)
-    echo "📁 Found ${TOTAL_FILES} JavaScript file(s):"
+    # Count files
+    TOTAL_FILES=$(echo "$ALL_FILES" | grep -c '.' 2>/dev/null || echo 0)
+    echo "📁 Analyzing ${TOTAL_FILES} JavaScript file(s):"
     echo "$ALL_FILES" | while read -r file; do
-        echo "   - ${file}"
+        if [ -n "$file" ]; then
+            echo "   - ${file}"
+        fi
     done
     echo ""
     
-    # Create temp directory for results
-    RESULTS_DIR="/tmp/jsinfo_results_$$_0"
-    mkdir -p "$RESULTS_DIR"
+    # Create temp directory for this run
+    TEMP_DIR="/tmp/jsinfo_${PID}"
+    mkdir -p "$TEMP_DIR"
     
-    # Analyze each file
+    # Process each file - use a counter and process sequentially
     file_index=0
-    echo "$ALL_FILES" | while read -r file; do
-        if [ -n "$file" ]; then
-            RESULT_DIR="/tmp/jsinfo_results_$$_${file_index}"
-            mkdir -p "$RESULT_DIR"
-            
-            echo "📄 Analyzing: $(basename "$file")"
-            
-            # Count imports
-            count_native_imports "$file" "${RESULT_DIR}/imports"
-            
-            # Extract interfaces
-            extract_interfaces "$file" "${RESULT_DIR}/interfaces"
-            
-            # Print results
-            print_results "${RESULT_DIR}/imports" "${RESULT_DIR}/interfaces"
-            echo ""
-            
-            file_index=$((file_index + 1))
+    IFS_OLD="$IFS"
+    IFS='
+'
+    for file in $ALL_FILES; do
+        if [ -z "$file" ]; then
+            continue
         fi
+        
+        echo "📄 Analyzing: $(basename "$file")"
+        
+        # Temp files for this file
+        bindings_file="${TEMP_DIR}/bindings_${file_index}"
+        usage_file="${TEMP_DIR}/usage_${file_index}"
+        final_file="${TEMP_DIR}/final_${file_index}"
+        
+        # Parse imports
+        parse_imports "$file" "$bindings_file"
+        
+        # Track usage
+        track_usage "$file" "$bindings_file" "$usage_file"
+        
+        # Extract final results
+        extract_final_results "$bindings_file" "$usage_file" "$final_file" "$file_index"
+        
+        # Print results
+        print_file_results "$final_file"
+        
+        file_index=$((file_index + 1))
     done
+    IFS="$IFS_OLD"
     
-    wait
+    # Combine all results
+    output_dir="$TARGET_DIR"
+    mkdir -p "$output_dir"
+    combine_all_results "$output_dir" "$TEMP_DIR"
     
-    # Decide action based on flags
-    if [ "$SCRIPT_GENERATOR" = "1" ]; then
-        # Generate shell script mode
-        if [ "$JSON_MODE" = "1" ]; then
-            echo "🔨 Generating JSON shell script..."
-            SCRIPT_NAME=$(generate_json_script)
-            echo "✅ JSON shell script generated: $SCRIPT_NAME"
-            echo ""
-            echo "📝 To create the JSON structure, run:"
-            echo "   ./$SCRIPT_NAME"
-            echo ""
-            echo "📍 This will create: /tmp/jsinfo/json/[timestamp]/"
-        elif [ "$GENERATE_SH" = "1" ]; then
-            echo "🔨 Generating directory shell script..."
-            SCRIPT_NAME=$(generate_shell_script)
-            echo "✅ Shell script generated: $SCRIPT_NAME"
-            echo ""
-            echo "📝 To create the interface structure, run:"
-            echo "   ./$SCRIPT_NAME"
-            echo ""
-            echo "📍 This will create: /tmp/jsinfo/[timestamp]/"
-        fi
+    # Save based on mode
+    if [ "$JSON_MODE" = "1" ]; then
+        save_as_json "${output_dir}/module_summary.txt" "$output_dir"
     else
-        # Direct save mode (default)
-        if [ "$JSON_MODE" = "1" ]; then
-            direct_json_save
-        elif [ "$GENERATE_SH" = "1" ]; then
-            direct_save
-        else
-            # Default to directory save if no mode specified
-            direct_save
-        fi
+        save_as_structure "${output_dir}/module_summary.txt" "$output_dir"
     fi
     
+    echo ""
+    echo "✅ Analysis complete!"
+    echo "📍 Results saved to: $output_dir"
+    echo "📄 Summary: $output_dir/README.md"
+    
     # Cleanup temp files
-    rm -rf /tmp/jsinfo_results_$$_*
+    rm -rf "$TEMP_DIR"
 }
 
 # Run main function
