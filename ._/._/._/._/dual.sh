@@ -24,7 +24,7 @@ if [[ ! "$JS_FILE" = /* ]]; then
 fi
 
 # Raw.sh is always relative to this script's location
-RAW_SCRIPT="$SCRIPT_DIR/../../../Raw.sh"
+RAW_SCRIPT="$SCRIPT_DIR/../../../../Raw.sh"
 # Make Raw.sh absolute if it's relative
 if [[ ! "$RAW_SCRIPT" = /* ]]; then
     RAW_SCRIPT="$(cd "$(dirname "$RAW_SCRIPT")" && pwd)/$(basename "$RAW_SCRIPT")"

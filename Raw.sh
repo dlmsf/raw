@@ -804,7 +804,7 @@ handle_test() {
     
     # Then execute the test script
     echo -e "${BLUE}Step 2: Executing test script...${NC}"
-    local test_script="$SCRIPT_DIR/dev/._/._/runtest.sh"
+    local test_script="$SCRIPT_DIR/dev/._/._/._/runtest.sh"
     
     if [ ! -f "$test_script" ]; then
         echo -e "${RED}Error: Test script not found at $test_script${NC}"
