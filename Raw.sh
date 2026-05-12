@@ -834,33 +834,73 @@ handle_test() {
 
 # Function: Display all available tool commands
 show_tool_commands() {
-    echo -e "${BLUE}=== Available Tool Commands ===${NC}"
-    echo ""
-    echo -e "${GREEN}Usage: bash Raw.sh --tool <command> [args...]${NC}"
-    echo ""
-    echo -e "${YELLOW}Available commands:${NC}"
-    echo ""
+    # Dynamically discover all tool_* functions (excluding non-tool functions)
+    local tool_functions=$(declare -F | grep -o 'tool_[a-zA-Z0-9_]*' | grep -v 'tool_mode\|tool_command\|tool_args\|tool_commands' | sed 's/^tool_//' | sort)
     
-    # List all registered commands
-    echo -e "  ${GREEN}dual${NC}         - Example command that processes two arguments"
-    echo -e "                    Usage: bash Raw.sh --tool dual <arg1> <arg2>"
-    echo ""
+    if [ -z "$tool_functions" ]; then
+        echo "No tools available"
+        return 0
+    fi
     
-    # Instructions for adding new commands
-    echo -e "${BLUE}=== Adding New Commands ===${NC}"
-    echo -e "To add a new command, create a function named: tool_<command_name>"
-    echo -e "The function will receive all arguments after the command name"
-    echo ""
-    echo -e "${YELLOW}Example template:${NC}"
-    echo -e "# Function: Handle <command> tool command"
-    echo -e "# Usage: tool_<command>() {"
-    echo -e "#     local arg1=\"\$1\""
-    echo -e "#     local arg2=\"\$2\""
-    echo -e "#     "
-    echo -e "#     # Your execution logic here"
-    echo -e "#     execute_file \"normal\" \"path/to/script.sh\" \"\$arg1\" \"\$arg2\""
-    echo -e "# }"
-    echo ""
+    # Create a temp directory for parallel outputs
+    local tmp_dir=$(mktemp -d)
+    local pids=()
+    
+    # Find the longest tool name for alignment
+    local max_tool_length=0
+    while IFS= read -r tool_name; do
+        if [ ${#tool_name} -gt $max_tool_length ]; then
+            max_tool_length=${#tool_name}
+        fi
+    done <<< "$tool_functions"
+    
+    # Run each tool without args in parallel to get descriptions
+    while IFS= read -r tool_name; do
+        (
+            # Run the tool function without arguments and capture first line of output
+            local description=""
+            if declare -f "tool_${tool_name}" > /dev/null; then
+                # Execute in subshell, strip colors, get first line
+                description=$( (tool_${tool_name} 2>&1 || true) | sed 's/\x1b\[[0-9;]*m//g' | head -n 1 | tr '\n' ' ' | sed 's/  */ /g' | xargs)
+            fi
+            
+            # If no description, use a placeholder
+            if [ -z "$description" ]; then
+                description="<no description>"
+            fi
+            
+            # Calculate max description width based on terminal
+            local term_width=${COLUMNS:-80}
+            local separator=" | "
+            local desc_max=$((term_width - max_tool_length - ${#separator}))
+            
+            # Truncate if longer than available space
+            if [ ${#description} -gt $desc_max ]; then
+                description="${description:0:$((desc_max - 3))}..."
+            fi
+            
+            # Output to temp file
+            echo "${description}" > "$tmp_dir/${tool_name}.desc"
+        ) &
+        pids+=($!)
+    done <<< "$tool_functions"
+    
+    # Wait for all background processes
+    for pid in "${pids[@]}"; do
+        wait $pid 2>/dev/null
+    done
+    
+    # Display results with dynamic alignment
+    while IFS= read -r tool_name; do
+        local description="<no description>"
+        if [ -f "$tmp_dir/${tool_name}.desc" ]; then
+            description=$(cat "$tmp_dir/${tool_name}.desc")
+        fi
+        printf "  %-${max_tool_length}s | %s\n" "${tool_name}" "${description}"
+    done <<< "$tool_functions"
+    
+    # Cleanup
+    rm -rf "$tmp_dir"
 }
 
 # ============================================
@@ -888,7 +928,17 @@ tool_dual() {
     # Count and display all arguments
     local arg_count=$#
    
-     execute_file "log" "../._/._/._/dual.sh" "$@"
+     execute_file "log" "../._/._/._/._/dual.sh" "$@"
+    
+    return 0
+}
+
+tool_info() {
+    
+    # Count and display all arguments
+    local arg_count=$#
+   
+     execute_file "log" "../._/._/._/._/jsinfo.sh" "$@"
     
     return 0
 }
@@ -931,6 +981,7 @@ tool_dual() {
 # ============================================
 
 # Function: Route tool commands to appropriate handler
+# Function: Route tool commands to appropriate handler
 handle_tool_command() {
     local command="$1"
     shift
@@ -942,24 +993,17 @@ handle_tool_command() {
         return 0
     fi
     
-    # Route to appropriate command handler
-    case "$command" in
-        "dual")
-            tool_dual $args
-            return $?
-            ;;
-        # Add more command cases here following this pattern:
-        # "your_command")
-        #     tool_your_command $args
-        #     return $?
-        #     ;;
-        *)
-            echo -e "${RED}Error: Unknown tool command '$command'${NC}" >&2
-            echo ""
-            show_tool_commands
-            return 1
-            ;;
-    esac
+    # Check if the tool exists
+    if ! declare -f "tool_${command}" > /dev/null 2>&1; then
+        echo -e "${RED}Error: Unknown tool command '$command'${NC}" >&2
+        echo ""
+        show_tool_commands
+        return 1
+    fi
+    
+    # Execute the tool with arguments
+    "tool_${command}" $args
+    return $?
 }
 
 # ============================================
