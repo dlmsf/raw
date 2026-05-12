@@ -9,13 +9,94 @@ set -e
 BASE_DIR="/tmp/jsinfo"
 TIMESTAMP=$(date +%Y-%m-%dT%H-%M-%S-000Z)
 TARGET_DIR="$BASE_DIR/$TIMESTAMP"
-GENERATE_SH=0
 JSON_MODE=0
-SCRIPT_GENERATOR=0
+FILE_MODE=0
+CLEAR_MODE=0
 PATHS=""
-SCRIPT_NAME=""
 TOTAL_FILES=0
 PID=$$
+
+# Get the actual working directory from where the command was called
+# Walk up the process tree to find the user's shell
+get_caller_cwd() {
+    local current_pid=$PPID
+    local max_depth=10
+    local depth=0
+    
+    while [ $depth -lt $max_depth ]; do
+        if [ -r "/proc/${current_pid}/cwd" ]; then
+            local cwd=$(readlink -f "/proc/${current_pid}/cwd" 2>/dev/null || echo "")
+            
+            # Skip system directories and runtime paths
+            case "$cwd" in
+                /usr/local/etc/*|/etc/*|/proc/*|/sys/*|/snap/*)
+                    # Skip these, they're system paths
+                    ;;
+                *)
+                    # Check if this process is a shell or the raw CLI
+                    if [ -r "/proc/${current_pid}/comm" ]; then
+                        local comm=$(cat "/proc/${current_pid}/comm" 2>/dev/null || echo "")
+                        case "$comm" in
+                            bash|sh|dash|ash|zsh|fish|node|raw)
+                                echo "$cwd"
+                                return 0
+                                ;;
+                        esac
+                    fi
+                    ;;
+            esac
+        fi
+        
+        # Get parent PID
+        if [ -r "/proc/${current_pid}/stat" ]; then
+            local parent_pid=$(cat "/proc/${current_pid}/stat" 2>/dev/null | cut -d' ' -f4 || echo "")
+            if [ -z "$parent_pid" ] || [ "$parent_pid" = "0" ] || [ "$parent_pid" = "$current_pid" ]; then
+                break
+            fi
+            current_pid=$parent_pid
+        else
+            break
+        fi
+        
+        depth=$((depth + 1))
+    done
+    
+    # Fallback: use the first non-system CWD we can find
+    current_pid=$PPID
+    depth=0
+    while [ $depth -lt $max_depth ]; do
+        if [ -r "/proc/${current_pid}/cwd" ]; then
+            local cwd=$(readlink -f "/proc/${current_pid}/cwd" 2>/dev/null || echo "")
+            case "$cwd" in
+                /usr/local/etc/*|/etc/*|/proc/*|/sys/*|/snap/*|/usr/*|/var/*|/tmp/*)
+                    ;;
+                *)
+                    if [ -d "$cwd" ]; then
+                        echo "$cwd"
+                        return 0
+                    fi
+                    ;;
+            esac
+        fi
+        
+        if [ -r "/proc/${current_pid}/stat" ]; then
+            local parent_pid=$(cat "/proc/${current_pid}/stat" 2>/dev/null | cut -d' ' -f4 || echo "")
+            if [ -z "$parent_pid" ] || [ "$parent_pid" = "0" ] || [ "$parent_pid" = "$current_pid" ]; then
+                break
+            fi
+            current_pid=$parent_pid
+        else
+            break
+        fi
+        
+        depth=$((depth + 1))
+    done
+    
+    # Last resort
+    echo "$(pwd)"
+}
+
+CALL_DIR=$(get_caller_cwd)
 
 # Native Node.js modules set
 is_native_module() {
@@ -266,12 +347,11 @@ extract_final_results() {
     rm -f "$used_modules_file"
 }
 
-# Print results per file
+# Print results per file (minimalistic)
 print_file_results() {
     final_file="$1"
     
     if [ ! -s "$final_file" ]; then
-        echo "   No native Node.js module usage found."
         return
     fi
     
@@ -279,48 +359,37 @@ print_file_results() {
     modules=$(cut -d'|' -f2 "$final_file" | sort -u)
     
     for module in $modules; do
-        echo "   📦 ${module}"
+        echo "  ${module}"
         
         # List interfaces/functions used
         grep "^USED_INTERFACE|${module}|" "$final_file" 2>/dev/null | sort -u | while IFS='|' read -r _ _ original alias type methods properties; do
             display_name="$original"
             if [ "$original" != "$alias" ]; then
-                display_name="${original} (as ${alias})"
+                display_name="${original}→${alias}"
             fi
             
             if [ "$type" = "interface" ]; then
-                echo "      🔹 Interface: ${display_name}"
-                
                 if [ -n "$methods" ]; then
-                    echo "         Methods:"
                     echo "$methods" | tr ',' '\n' | sort -u | while read -r method; do
                         if [ -n "$method" ]; then
-                            echo "            - ${method}()"
+                            echo "    ${display_name}.${method}()"
                         fi
                     done
                 fi
                 
                 if [ -n "$properties" ]; then
-                    echo "         Properties:"
                     echo "$properties" | tr ',' '\n' | sort -u | while read -r prop; do
                         if [ -n "$prop" ]; then
-                            echo "            - ${prop}"
+                            echo "    ${display_name}.${prop}"
                         fi
                     done
                 fi
             elif [ "$type" = "function" ]; then
-                echo "      🔸 Function: ${display_name}()"
+                echo "    ${display_name}()"
             else
-                echo "      ❓ Used: ${display_name}"
+                echo "    ${display_name}"
             fi
         done
-        
-        # Module-level imports
-        grep "^MODULE_IMPORT|${module}|" "$final_file" 2>/dev/null | sort -u | while IFS='|' read -r _ _ type; do
-            echo "      📎 Module import (${type})"
-        done
-        
-        echo ""
     done
 }
 
@@ -343,8 +412,7 @@ combine_all_results() {
     done
     
     if [ ! -s "$tmp_combined" ]; then
-        echo "No results to combine."
-        return
+        return 1
     fi
     
     # Get unique interfaces per module with their methods
@@ -377,10 +445,12 @@ combine_all_results() {
             echo "INTERFACE|${name}|${type}|${all_methods}|${all_props}" >> "${output_dir}/module_summary.txt"
         done
     done
+    
+    return 0
 }
 
-# Save results as directory structure
-save_as_structure() {
+# Save results as directory structure with .method files
+save_as_files() {
     summary_file="$1"
     output_dir="$2"
     
@@ -581,14 +651,14 @@ main() {
     # Parse arguments
     for arg in "$@"; do
         case "$arg" in
-            --sh)
-                GENERATE_SH=1
-                ;;
             --json)
                 JSON_MODE=1
                 ;;
-            --script-generator)
-                SCRIPT_GENERATOR=1
+            --file)
+                FILE_MODE=1
+                ;;
+            --clear)
+                CLEAR_MODE=1
                 ;;
             *)
                 if [ -z "$PATHS" ]; then
@@ -600,64 +670,103 @@ main() {
         esac
     done
     
+    # Handle clear mode (can work standalone or with other args)
+    if [ "$CLEAR_MODE" = "1" ]; then
+        if [ -d "$BASE_DIR" ]; then
+            rm -rf "$BASE_DIR"
+            echo "🧹 Cleared $BASE_DIR"
+        else
+            echo "🧹 Nothing to clear (${BASE_DIR} does not exist)"
+        fi
+        
+        # If only --clear was provided, exit after clearing
+        if [ -z "$PATHS" ]; then
+            exit 0
+        fi
+    fi
+    
+    # If no paths provided and not in clear-only mode, show error
     if [ -z "$PATHS" ]; then
         echo "❌ Please provide at least one .js file or directory"
-        echo "Usage: $0 [--sh] [--json] [--script-generator] <file1.js> <file2.js> <dir1> ..."
-        echo "  --sh                  Generate directory structure with .method files"
-        echo "  --json                Generate JSON output"
-        echo "  --script-generator    Generate .sh script instead of saving directly"
+        echo "Usage: $0 [--json] [--file] [--clear] <file1.js> <file2.js> <dir1> ..."
+        echo "  --json   Save analysis as JSON in /tmp/jsinfo"
+        echo "  --file   Save analysis with .method files in /tmp/jsinfo"
+        echo "  --clear  Clear /tmp/jsinfo (can be used alone or before saving)"
         exit 1
     fi
-    
-    # Collect all JS files into a variable (avoid subshell)
-    ALL_FILES=""
-    for path in $PATHS; do
-        if [ -f "$path" ]; then
-            case "$path" in
-                *.js|*.mjs|*.cjs)
-                    ALL_FILES="${ALL_FILES}${path}
-"
-                    ;;
-            esac
-        elif [ -d "$path" ]; then
-            found=$(find "$path" -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.cjs" \) 2>/dev/null)
-            if [ -n "$found" ]; then
-                ALL_FILES="${ALL_FILES}${found}
-"
-            fi
-        fi
-    done
-    
-    if [ -z "$ALL_FILES" ]; then
-        echo "❌ No .js files found"
-        exit 1
-    fi
-    
-    # Count files
-    TOTAL_FILES=$(echo "$ALL_FILES" | grep -c '.' 2>/dev/null || echo 0)
-    echo "📁 Analyzing ${TOTAL_FILES} JavaScript file(s):"
-    echo "$ALL_FILES" | while read -r file; do
-        if [ -n "$file" ]; then
-            echo "   - ${file}"
-        fi
-    done
-    echo ""
     
     # Create temp directory for this run
     TEMP_DIR="/tmp/jsinfo_${PID}"
     mkdir -p "$TEMP_DIR"
     
-    # Process each file - use a counter and process sequentially
+    # Print detected call directory for debugging
+    echo "📍 Working directory: ${CALL_DIR}" >&2
+    
+    # Collect all JS files - use CALL_DIR for relative paths
+    ALL_FILES_FILE="${TEMP_DIR}/all_files.txt"
+    > "$ALL_FILES_FILE"
+    
+    for path in $PATHS; do
+        # If path is relative, prepend CALL_DIR
+        case "$path" in
+            /*)
+                # Absolute path - use as is
+                resolved_path="$path"
+                ;;
+            *)
+                # Relative path - resolve against CALL_DIR
+                resolved_path="${CALL_DIR}/${path}"
+                ;;
+        esac
+        
+        if [ -f "$resolved_path" ]; then
+            # It's a file - check if it's a JS file
+            case "$resolved_path" in
+                *.js|*.mjs|*.cjs)
+                    echo "$resolved_path" >> "$ALL_FILES_FILE"
+                    ;;
+            esac
+        elif [ -d "$resolved_path" ]; then
+            # It's a directory - find all JS files in it
+            find "$resolved_path" -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.cjs" \) 2>/dev/null >> "$ALL_FILES_FILE" || true
+        else
+            # Also try the original path without prepending
+            if [ -f "$path" ]; then
+                case "$path" in
+                    *.js|*.mjs|*.cjs)
+                        echo "$path" >> "$ALL_FILES_FILE"
+                        ;;
+                esac
+            elif [ -d "$path" ]; then
+                find "$path" -type f \( -name "*.js" -o -name "*.mjs" -o -name "*.cjs" \) 2>/dev/null >> "$ALL_FILES_FILE" || true
+            fi
+        fi
+    done
+    
+    # Remove duplicates and empty lines
+    if [ -s "$ALL_FILES_FILE" ]; then
+        sort -u "$ALL_FILES_FILE" | grep -v '^$' > "${ALL_FILES_FILE}.tmp"
+        mv "${ALL_FILES_FILE}.tmp" "$ALL_FILES_FILE"
+    fi
+    
+    # Check if we found any files
+    if [ ! -s "$ALL_FILES_FILE" ]; then
+        echo "❌ No .js files found in: $PATHS"
+        echo "   Call directory: ${CALL_DIR}"
+        echo "   Resolved path: ${resolved_path}"
+        rm -rf "$TEMP_DIR"
+        exit 1
+    fi
+    
+    # Count files
+    TOTAL_FILES=$(wc -l < "$ALL_FILES_FILE" 2>/dev/null || echo 0)
+    
+    # Process each file
     file_index=0
-    IFS_OLD="$IFS"
-    IFS='
-'
-    for file in $ALL_FILES; do
+    while IFS= read -r file; do
         if [ -z "$file" ]; then
             continue
         fi
-        
-        echo "📄 Analyzing: $(basename "$file")"
         
         # Temp files for this file
         bindings_file="${TEMP_DIR}/bindings_${file_index}"
@@ -673,29 +782,44 @@ main() {
         # Extract final results
         extract_final_results "$bindings_file" "$usage_file" "$final_file" "$file_index"
         
-        # Print results
-        print_file_results "$final_file"
-        
         file_index=$((file_index + 1))
-    done
-    IFS="$IFS_OLD"
+    done < "$ALL_FILES_FILE"
     
     # Combine all results
     output_dir="$TARGET_DIR"
     mkdir -p "$output_dir"
-    combine_all_results "$output_dir" "$TEMP_DIR"
     
-    # Save based on mode
-    if [ "$JSON_MODE" = "1" ]; then
-        save_as_json "${output_dir}/module_summary.txt" "$output_dir"
+    if combine_all_results "$output_dir" "$TEMP_DIR"; then
+        # Determine output mode
+        if [ "$JSON_MODE" = "1" ] || [ "$FILE_MODE" = "1" ]; then
+            if [ "$JSON_MODE" = "1" ]; then
+                save_as_json "${output_dir}/module_summary.txt" "$output_dir"
+            fi
+            if [ "$FILE_MODE" = "1" ]; then
+                save_as_files "${output_dir}/module_summary.txt" "$output_dir"
+            fi
+            echo ""
+            echo "📍 Results saved to: $output_dir"
+        else
+            # Default: just show minimalistic output
+            echo ""
+            # Show combined results
+            for i in $(seq 0 $((file_index - 1))); do
+                final_file="${TEMP_DIR}/final_${i}"
+                if [ -f "$final_file" ] && [ -s "$final_file" ]; then
+                    print_file_results "$final_file"
+                fi
+            done
+            
+            # Cleanup output dir if not saving
+            rm -rf "$output_dir"
+        fi
     else
-        save_as_structure "${output_dir}/module_summary.txt" "$output_dir"
+        if [ "$JSON_MODE" != "1" ] && [ "$FILE_MODE" != "1" ]; then
+            echo "No native Node.js modules detected."
+            rm -rf "$output_dir"
+        fi
     fi
-    
-    echo ""
-    echo "✅ Analysis complete!"
-    echo "📍 Results saved to: $output_dir"
-    echo "📄 Summary: $output_dir/README.md"
     
     # Cleanup temp files
     rm -rf "$TEMP_DIR"
