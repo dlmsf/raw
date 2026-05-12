@@ -13,6 +13,8 @@ FORCE_LOG_MODE="false"  # New flag for --log (only for normal JS execution)
 TOOL_MODE="false"       # New flag for --tool
 TOOL_COMMAND=""         # Store the tool command
 TOOL_ARGS=""           # Store tool arguments
+ASM_MODE="false"        # New flag for --asm
+ASM_ONLY_MODE="false"   # Flag for --asm without JS file
 
 if [ $# -gt 0 ]; then
     if [ "$1" = "--test" ] || [ "$1" = "--reset" ]; then
@@ -29,6 +31,18 @@ if [ $# -gt 0 ]; then
             
             # Store remaining arguments as tool args
             TOOL_ARGS="$@"
+        fi
+    elif [ "$1" = "--asm" ]; then
+        ASM_MODE="true"
+        shift  # Remove --asm flag
+        
+        # Check if there's a JS file after --asm
+        if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+            # There's a JS file - will process normally and then copy asm
+            ASM_ONLY_MODE="false"
+        else
+            # No JS file - just copy the asm file
+            ASM_ONLY_MODE="true"
         fi
     elif [ "$1" = "--version" ] || [ "$1" = "--v" ] || [ "$1" = "-v" ] || [ "$1" = "-version" ]; then
         # Get script's own directory to read package.json
@@ -57,10 +71,10 @@ if [ -z "$SPECIAL_MODE" ] && [ "$TOOL_MODE" = "false" ] && [ $# -gt 0 ]; then
     fi
 fi
 
-# Process JS file argument BEFORE changing directories (only if not in tool mode)
+# Process JS file argument BEFORE changing directories (only if not in tool mode and not asm-only mode)
 JS_FILE=""
 JS_ARGS=""
-if [ "$TOOL_MODE" = "false" ] && [ $# -gt 0 ] && [ -z "$SPECIAL_MODE" ]; then
+if [ "$TOOL_MODE" = "false" ] && [ $# -gt 0 ] && [ -z "$SPECIAL_MODE" ] && [ "$ASM_ONLY_MODE" = "false" ]; then
     # Resolve JS file path relative to caller's directory
     if [[ "$1" = /* ]]; then
         # Absolute path
@@ -292,6 +306,12 @@ rm_dir() {
     rm -rf "$1" 2>/dev/null
 }
 
+# Minimalistic copy file (preserves original)
+# Usage: cp_file "source" "destination"
+cp_file() {
+    cp "$1" "$2" 2>/dev/null
+}
+
 # ============================================
 # EXECUTION TIME TRACKING (for --log mode)
 # ============================================
@@ -348,9 +368,6 @@ stop_timer() {
 }
 
 # Function: Compile and link all .asm files and copy .sh files to /dev directory
-# This only runs if ./dev directory does NOT exist
-# COMPLETELY SILENT unless VERBOSE_DEV=true
-# Function: Compile and link all .asm files, copy .sh files and binaries to /dev directory
 # This only runs if ./dev directory does NOT exist
 # COMPLETELY SILENT unless VERBOSE_DEV=true
 compile_and_copy() {
@@ -538,7 +555,7 @@ compile_and_copy() {
             
             # Copy the .sh file (completely silent)
             dev_log "  Copying: cp \"${sh_file}\" \"${output_file}\""
-            cp "$sh_file" "$output_file" 2>/dev/null
+            cp_file "$sh_file" "$output_file"
             COPY_EXIT=$?
             
             if [ $COPY_EXIT -eq 0 ]; then
@@ -576,7 +593,7 @@ compile_and_copy() {
             
             # Copy the binary file (completely silent)
             dev_log "  Copying: cp \"${binary_file}\" \"${output_file}\""
-            cp "$binary_file" "$output_file" 2>/dev/null
+            cp_file "$binary_file" "$output_file"
             COPY_EXIT=$?
             
             if [ $COPY_EXIT -eq 0 ]; then
@@ -614,7 +631,7 @@ compile_and_copy() {
             
             # Copy the file (completely silent)
             dev_log "  Copying: cp \"${basm_file}\" \"${output_file}\""
-            cp "$basm_file" "$output_file" 2>/dev/null
+            cp_file "$basm_file" "$output_file"
             COPY_EXIT=$?
             
             if [ $COPY_EXIT -eq 0 ]; then
@@ -759,6 +776,7 @@ show_usage() {
     echo -e "${YELLOW}       bash Raw.sh --test${NC}"
     echo -e "${YELLOW}       bash Raw.sh --tool [command] [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --version${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --asm [path/to/file.js] [args...]${NC}"
 }
 
 # Process the JavaScript file - just store path and args for later use
@@ -784,6 +802,28 @@ process_js_file() {
     return 0
 }
 
+# Function: Copy build_output.asm to caller's directory
+copy_asm_to_caller() {
+    local source_asm="$SCRIPT_DIR/dev/build_output.asm"
+    
+    # Check if build_output.asm exists
+    if [ ! -f "$source_asm" ]; then
+        echo -e "${RED}Error: build_output.asm not found in dev directory${NC}" >&2
+        return 1
+    fi
+    
+    # Copy to caller's directory (replacing if exists)
+    cp_file "$source_asm" "$CALLER_DIR/build_output.asm"
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}✓ build_output.asm copied to: $CALLER_DIR/build_output.asm${NC}"
+        return 0
+    else
+        echo -e "${RED}✗ Failed to copy build_output.asm to caller directory${NC}" >&2
+        return 1
+    fi
+}
+
 # ============================================
 # SPECIAL MODE HANDLERS
 # ============================================
@@ -799,6 +839,12 @@ handle_reset() {
     compile_and_copy
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Reset completed successfully! /dev directory has been rebuilt.${NC}"
+        
+        # If asm mode is active, copy the asm file after reset
+        if [ "$ASM_MODE" = "true" ]; then
+            copy_asm_to_caller
+        fi
+        
         return 0
     else
         echo -e "${RED}Reset failed during compilation!${NC}"
@@ -838,6 +884,11 @@ handle_test() {
     
     if [ $test_result -eq 0 ]; then
         echo -e "${GREEN}Tests completed successfully!${NC}"
+        
+        # If asm mode is active, copy the asm file after test
+        if [ "$ASM_MODE" = "true" ]; then
+            copy_asm_to_caller
+        fi
     else
         echo -e "${RED}Tests failed with exit code: $test_result${NC}"
     fi
@@ -998,7 +1049,6 @@ tool_info() {
 # ============================================
 
 # Function: Route tool commands to appropriate handler
-# Function: Route tool commands to appropriate handler
 handle_tool_command() {
     local command="$1"
     shift
@@ -1072,7 +1122,24 @@ main_flow() {
         exit $?
     fi
     
-    # Step 2: Check for special modes
+    # Step 2: Check for asm-only mode (--asm without JS file)
+    if [ "$ASM_MODE" = "true" ] && [ "$ASM_ONLY_MODE" = "true" ]; then
+        # Check if dev directory exists
+        if [ ! -d "$SCRIPT_DIR/dev" ]; then
+            echo -e "${YELLOW}Dev directory doesn't exist. Building first...${NC}"
+            compile_and_copy
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}Build failed! Cannot copy asm file.${NC}"
+                exit 1
+            fi
+        fi
+        
+        # Copy the asm file to caller directory
+        copy_asm_to_caller
+        exit $?
+    fi
+    
+    # Step 3: Check for special modes
     if [ "$SPECIAL_MODE" = "--reset" ]; then
         handle_reset
         exit $?
@@ -1081,7 +1148,7 @@ main_flow() {
         exit $?
     fi
     
-    # Step 3: Normal execution flow (only if no special mode)
+    # Step 4: Normal execution flow (only if no special mode)
     # Compile and copy only if ./dev doesn't exist (based on script's directory)
     if [ ! -d "$SCRIPT_DIR/dev" ]; then
         compile_and_copy
@@ -1093,7 +1160,7 @@ main_flow() {
         fi
     fi
     
-    # Step 4: Process the JS file if provided
+    # Step 5: Process the JS file if provided
     if [ -n "$JS_FILE" ]; then
         process_js_file "$JS_FILE" $JS_ARGS
         if [ $? -ne 0 ]; then
@@ -1129,6 +1196,11 @@ main_flow() {
         # Display execution time if in log mode
         if [ "$FORCE_LOG_MODE" = "true" ]; then
             stop_timer
+        fi
+        
+        # If asm mode is active, copy the asm file after execution
+        if [ "$ASM_MODE" = "true" ]; then
+            copy_asm_to_caller
         fi
     else
         show_usage
