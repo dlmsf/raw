@@ -819,7 +819,7 @@ main() {
         local output_dir="$TARGET_DIR"
         mkdir -p "$output_dir"
         
-        if combine_all_results "$output_dir" "$combined"; then
+                if combine_all_results "$output_dir" "$combined"; then
             if [ "$JSON_MODE" = "1" ]; then
                 save_as_json "${output_dir}/module_summary.txt" "$output_dir"
             fi
@@ -830,16 +830,16 @@ main() {
             echo "Results saved to: $output_dir"
             
             # Also print the tree when saving
-            print_one_line_totals "$totals"
             print_module_tree "$combined"
+            print_one_line_totals "$totals"  # Moved after tree
         else
             echo "No native Node.js modules detected."
             rm -rf "$output_dir"
         fi
     else
-        # Default mode: print one-line totals + tree
-        print_one_line_totals "$totals"
+        # Default mode: print tree + one-line totals
         print_module_tree "$combined"
+        print_one_line_totals "$totals"  # Moved after tree
     fi
     
     # Cleanup
