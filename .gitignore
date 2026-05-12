@@ -5,6 +5,8 @@
 
 
 *.js
+*.mjs
+*.cjs
 /test
 /dev
 arch_output
