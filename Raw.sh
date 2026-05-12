@@ -30,6 +30,22 @@ if [ $# -gt 0 ]; then
             # Store remaining arguments as tool args
             TOOL_ARGS="$@"
         fi
+    elif [ "$1" = "--version" ] || [ "$1" = "--v" ] || [ "$1" = "-v" ] || [ "$1" = "-version" ]; then
+        # Get script's own directory to read package.json
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        
+        # Read version from package.json
+        if [ -f "$SCRIPT_DIR/package.json" ]; then
+            VERSION=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$SCRIPT_DIR/package.json" | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+')
+            if [ -n "$VERSION" ]; then
+                echo "RawJS - $VERSION"
+            else
+                echo "RawJS - version unknown"
+            fi
+        else
+            echo "RawJS - version unknown"
+        fi
+        exit 0
     fi
 fi
 
@@ -742,6 +758,7 @@ show_usage() {
     echo -e "${YELLOW}       bash Raw.sh --reset${NC}"
     echo -e "${YELLOW}       bash Raw.sh --test${NC}"
     echo -e "${YELLOW}       bash Raw.sh --tool [command] [args...]${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --version${NC}"
 }
 
 # Process the JavaScript file - just store path and args for later use
