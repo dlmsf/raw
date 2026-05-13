@@ -1,113 +1,52 @@
 section .data
     filename db "./build_output.asm", 0
     template db "section .data", 10
-             db "    ; =========================================", 10
-             db "    ; RUNTIME TYPE SYSTEM", 10
-             db "    ; =========================================", 10
-             db "    ; Each variable MUST have a corresponding _type tag", 10
-             db "    ; Format: variable_name dq value", 10
-             db "    ;         variable_name_type dq TYPE_*", 10
-             db "    ;", 10
-             db "    ; Type constants:", 10
+             db "    ; Constants (like JavaScript const)", 10
+             db "    ; Example: MAX_SIZE equ 100", 10, 10
+             
+             db "    ; Global variables (like JavaScript let/var)", 10
+             db "    ; Example: counter dq 0", 10
+             db "    ; Example: message db 'Hello', 0", 10, 10
+             
+             db "    ; Function pointers", 10
+             db "    ; Example: callback dq 0", 10, 10
+             
+             db "    ; ANSI Color Codes", 10
+             db "    COLOR_RESET   db 27, '[0m', 0", 10
+             db "    COLOR_BRIGHT  db 27, '[1m', 0", 10
+             db "    COLOR_DARK    db 27, '[2m', 0", 10
+             db "    COLOR_GREEN   db 27, '[32m', 0", 10
+             db "    COLOR_GRAY    db 27, '[90m', 0   ; Dark gray", 10
+             db "    COLOR_BLUE    db 27, '[34m', 0", 10, 10
+             
+             db "    ; Type constants for print function", 10
              db "    TYPE_STRING    equ 1", 10
              db "    TYPE_NUMBER    equ 2", 10
              db "    TYPE_CHAR      equ 3", 10
              db "    TYPE_BOOLEAN   equ 4", 10
              db "    TYPE_NULL      equ 5", 10
              db "    TYPE_UNDEFINED equ 6", 10
-             db "    TYPE_FLOAT     equ 7", 10
-             db "    TYPE_ARRAY     equ 8", 10
-             db "    TYPE_OBJECT    equ 9", 10, 10
+             db "    TYPE_FLOAT     equ 7", 10, 10
              
-             db "    ; =========================================", 10
-             db "    ; GLOBAL VARIABLES (JavaScript let/var/const)", 10
-             db "    ; =========================================", 10
-             db "    ; Example with type tag:", 10
-             db "    ; counter dq 0", 10
-             db "    ; counter_type dq TYPE_NUMBER", 10
-             db "    ;", 10
-             db "    ; message db 'Hello', 0", 10
-             db "    ; message_type dq TYPE_STRING", 10
-             db "    ;", 10
-             db "    ; is_active dq 1", 10
-             db "    ; is_active_type dq TYPE_BOOLEAN", 10
-             db "    ;", 10
-             db "    ; pi dq 3.14159 (stored in float_val)", 10
-             db "    ; pi_type dq TYPE_FLOAT", 10, 10
-             
-             db "    ; =========================================", 10
-             db "    ; FUNCTION POINTERS", 10
-             db "    ; =========================================", 10
-             db "    ; callback dq 0", 10
-             db "    ; callback_type dq TYPE_UNDEFINED", 10, 10
-             
-             db "    ; =========================================", 10
-             db "    ; ANSI COLOR CODES", 10
-             db "    ; =========================================", 10
-             db "    COLOR_RESET   db 27, '[0m', 0", 10
-             db "    COLOR_RESET_type dq TYPE_STRING", 10
-             db "    COLOR_BRIGHT  db 27, '[1m', 0", 10
-             db "    COLOR_BRIGHT_type dq TYPE_STRING", 10
-             db "    COLOR_DARK    db 27, '[2m', 0", 10
-             db "    COLOR_DARK_type dq TYPE_STRING", 10
-             db "    COLOR_GREEN   db 27, '[32m', 0", 10
-             db "    COLOR_GREEN_type dq TYPE_STRING", 10
-             db "    COLOR_GRAY    db 27, '[90m', 0   ; Dark gray", 10
-             db "    COLOR_GRAY_type dq TYPE_STRING", 10
-             db "    COLOR_BLUE    db 27, '[34m', 0", 10
-             db "    COLOR_BLUE_type dq TYPE_STRING", 10, 10
-             
-             db "    ; =========================================", 10
-             db "    ; UTILITY STRINGS", 10
-             db "    ; =========================================", 10
+             db "    ; Boolean strings", 10
              db "    true_str db 'true', 0", 10
-             db "    true_str_type dq TYPE_STRING", 10
              db "    false_str db 'false', 0", 10
-             db "    false_str_type dq TYPE_STRING", 10
              db "    null_str db 'null', 0", 10
-             db "    null_str_type dq TYPE_STRING", 10
              db "    undefined_str db 'undefined', 0", 10
-             db "    undefined_str_type dq TYPE_STRING", 10
              db "    hex_prefix db '0x', 0", 10
-             db "    hex_prefix_type dq TYPE_STRING", 10
-             db "    space db ' ', 0", 10
-             db "    space_type dq TYPE_STRING", 10
-             db "    newline db 10, 0", 10
-             db "    newline_type dq TYPE_STRING", 10, 10
+             db "    float_scale dq 1000000000000000.0", 10, 10
              
-             db "    ; =========================================", 10
-             db "    ; FLOAT SUPPORT", 10
-             db "    ; =========================================", 10
-             db "    float_scale dq 1000000.0", 10
-             db "    float_scale_type dq TYPE_FLOAT", 10
-             db "    float_buffer times 32 db 0    ; Temporary float string buffer", 10
-             db "    float_buffer_type dq TYPE_STRING", 10, 10
+             db "    ; Common utility strings", 10
+             db "    space db ' ', 0", 10
+             db "    newline db 10, 0", 10, 10
              
              db "section .bss", 10
-             db "    ; =========================================", 10
-             db "    ; PRINT BUFFERS", 10
-             db "    ; =========================================", 10
              db "    print_buffer resb 32", 10
              db "    number_buffer resb 32", 10
-             db "    temp_number resq 1", 10
-             db "    temp_number_type resq 1    ; Runtime type tracking", 10, 10
+             db "    temp_number resq 1", 10, 10
              
              db "section .text", 10
              db "    global _start", 10, 10
-             
-             db "    ; =========================================", 10
-             db "    ; RUNTIME TYPE HELPER FUNCTIONS", 10
-             db "    ; =========================================", 10, 10
-             
-             db "    ; get_variable_type:", 10
-             db "    ; Input: rsi = pointer to variable name string", 10
-             db "    ; Output: rdx = type constant", 10
-             db "    ; This would be a more complex implementation", 10
-             db "    ; For now, types are stored alongside variables", 10, 10
-             
-             db "    ; =========================================", 10
-             db "    ; STRING UTILITY FUNCTIONS", 10
-             db "    ; =========================================", 10, 10
              
              db "print_raw_string:", 10
              db "    ; Input: rsi = pointer to null-terminated string", 10
@@ -129,10 +68,6 @@ section .data
              db "    pop rcx", 10
              db "    pop rdi", 10
              db "    ret", 10, 10
-             
-             db "    ; =========================================", 10
-             db "    ; NUMBER CONVERSION FUNCTIONS", 10
-             db "    ; =========================================", 10, 10
              
              db "print_raw_number:", 10
              db "    ; Input: [temp_number] = number to print", 10
@@ -174,10 +109,6 @@ section .data
              db "    pop rcx", 10
              db "    pop rbx", 10
              db "    ret", 10, 10
-             
-             db "    ; =========================================", 10
-             db "    ; FLOAT CONVERSION FUNCTION", 10
-             db "    ; =========================================", 10, 10
              
              db "float_to_str:", 10
              db "    ; Convert double in xmm0 to string.", 10
@@ -255,15 +186,15 @@ section .data
              db "    mov byte [rdi], '.'", 10
              db "    inc rdi", 10
              db "    ", 10
-             db "    ; Multiply fractional part by 1,000,000 to get 6 digits", 10
+             db "    ; Multiply fractional part by 1,000,000,000,000,000 to get 15 digits", 10
              db "    movsd xmm1, [float_scale]", 10
-             db "    mulsd xmm0, xmm1       ; xmm0 = fraction * 1,000,000", 10
-             db "    cvttsd2si r9, xmm0      ; r9 = 0 to 999999", 10
+             db "    mulsd xmm0, xmm1       ; xmm0 = fraction * 10^15", 10
+             db "    cvttsd2si r9, xmm0      ; r9 = 0 to 999999999999999", 10
              db "    ", 10
-             db "    ; Convert r9 to 6-digit string with leading zeros", 10
+             db "    ; Convert r9 to 15-digit string with leading zeros", 10
              db "    mov rax, r9", 10
-             db "    mov r8, 6               ; Digit counter", 10
-             db "    mov r9, 100000          ; Divisor", 10
+             db "    mov r8, 15               ; Digit counter", 10
+             db "    mov r9, 100000000000000          ; Divisor", 10
              db ".frac_loop:", 10
              db "    cmp r8, 0", 10
              db "    je .done", 10
@@ -314,13 +245,8 @@ section .data
              db "    pop rax", 10
              db "    ret", 10, 10
              
-             db "    ; =========================================", 10
-             db "    ; MAIN PRINT FUNCTION WITH RUNTIME TYPE SUPPORT", 10
-             db "    ; =========================================", 10, 10
-             
              db "print:", 10
-             db "    ; Input: rax = value/pointer, rdx = type (from TYPE_* constants)", 10
-             db "    ; This function handles ALL JavaScript types at runtime", 10
+             db "    ; Input: rax = value/pointer, rdx = type", 10
              db "    cmp rdx, TYPE_STRING", 10
              db "    je .print_string", 10
              db "    cmp rdx, TYPE_NUMBER", 10
@@ -335,10 +261,6 @@ section .data
              db "    je .print_null", 10
              db "    cmp rdx, TYPE_UNDEFINED", 10
              db "    je .print_undefined", 10
-             db "    cmp rdx, TYPE_ARRAY", 10
-             db "    je .print_array", 10
-             db "    cmp rdx, TYPE_OBJECT", 10
-             db "    je .print_object", 10
              db "    jmp .print_hex", 10
              db "    ", 10
              db ".print_string:", 10
@@ -437,32 +359,6 @@ section .data
              db "    pop rsi", 10
              db "    ret", 10
              db "    ", 10
-             db ".print_array:", 10
-             db "    push rsi", 10
-             db "    mov rsi, COLOR_DARK", 10
-             db "    call print_raw_string", 10
-             db "    mov rsi, COLOR_GRAY", 10
-             db "    call print_raw_string", 10
-             db "    mov rsi, undefined_str", 10  ; Placeholder until array printing is implemented
-             db "    call print_raw_string", 10
-             db "    mov rsi, COLOR_RESET", 10
-             db "    call print_raw_string", 10
-             db "    pop rsi", 10
-             db "    ret", 10
-             db "    ", 10
-             db ".print_object:", 10
-             db "    push rsi", 10
-             db "    mov rsi, COLOR_DARK", 10
-             db "    call print_raw_string", 10
-             db "    mov rsi, COLOR_GRAY", 10
-             db "    call print_raw_string", 10
-             db "    mov rsi, undefined_str", 10  ; Placeholder until object printing is implemented
-             db "    call print_raw_string", 10
-             db "    mov rsi, COLOR_RESET", 10
-             db "    call print_raw_string", 10
-             db "    pop rsi", 10
-             db "    ret", 10
-             db "    ", 10
              db ".print_hex:", 10
              db "    push rsi", 10
              db "    push rax", 10
@@ -494,25 +390,14 @@ section .data
              db "    pop rsi", 10
              db "    ret", 10, 10
              
-             db "    ; =========================================", 10
-             db "    ; PROGRAM ENTRY POINT", 10
-             db "    ; =========================================", 10, 10
-             
              db "_start:", 10
-             db "    ; =========================================", 10
-             db "    ; YOUR CODE WILL BE APPENDED HERE", 10
-             db "    ; =========================================", 10
-             db "    ; Example with runtime type support:", 10
+             db "    ; Your code here", 10
+             db "    ; Example usage:", 10
              db "    ;   mov rax, 42", 10
              db "    ;   mov rdx, TYPE_NUMBER", 10
              db "    ;   call print", 10
              db "    ;   mov rax, newline", 10
              db "    ;   mov rdx, TYPE_STRING", 10
-             db "    ;   call print", 10
-             db "    ;", 10
-             db "    ; Example with variable and type tag:", 10
-             db "    ;   mov rax, [counter]", 10
-             db "    ;   mov rdx, [counter_type]", 10
              db "    ;   call print", 10, 10
              db "    mov rax, 60", 10
              db "    xor rdi, rdi", 10
