@@ -444,7 +444,11 @@ copy_files() {
   # Use cp with proper options instead of rsync (more compatible)
   if [ "$LOG_MODE" = true ]; then
     # Verbose copy with progress indication
-    (cd "$src_dir" && find . -type f ! -path "./.git/*" | while read file; do
+    (cd "$src_dir" && find . -type f \
+      ! -path "./.git/*" \
+      ! -name "build_output.asm" \
+      ! -path "./dev/*" \
+      | while read file; do
       dest_file="$dest_dir/$file"
       dest_folder=$(dirname "$dest_file")
       mkdir -p "$dest_folder"
@@ -453,7 +457,11 @@ copy_files() {
     copy_pid=$!
   else
     # Silent copy
-    (cd "$src_dir" && find . -type f ! -path "./.git/*" | while read file; do
+    (cd "$src_dir" && find . -type f \
+      ! -path "./.git/*" \
+      ! -name "build_output.asm" \
+      ! -path "./dev/*" \
+      | while read file; do
       dest_file="$dest_dir/$file"
       dest_folder=$(dirname "$dest_file")
       mkdir -p "$dest_folder"
@@ -465,7 +473,11 @@ copy_files() {
   show_progress "Copying $description files" $copy_pid
   
   # Verify files were copied
-  local src_count=$(cd "$src_dir" && find . -type f ! -path "./.git/*" | wc -l)
+  local src_count=$(cd "$src_dir" && find . -type f \
+    ! -path "./.git/*" \
+    ! -name "build_output.asm" \
+    ! -path "./dev/*" \
+    | wc -l)
   local dest_count=$(find "$dest_dir" -type f | wc -l)
   
   log_message "Copied $dest_count of $src_count files"
