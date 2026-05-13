@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # null.sh - Converts JavaScript null declarations to NASM assembly data structures
+# Generates runtime type tags compatible with the new log.sh
 # In JavaScript, null represents a variable that has been explicitly assigned no value
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
@@ -38,10 +39,13 @@ if [[ ! "$VAR_VALUE" =~ ^[Nn]ull$ ]]; then
     exit 1
 fi
 
-# Generate assembly data - MATCH THE FORMAT THAT log.sh EXPECTS
-ASSEMBLY_DATA="\n    ; Variable: $VAR_NAME = null (type: null)"
-ASSEMBLY_DATA+="\n    ${VAR_NAME}_type db TYPE_NULL ; Type indicator for null"
-ASSEMBLY_DATA+="\n    ${VAR_NAME} dq 0 ; Null value (0)"
+# Generate assembly data with RUNTIME TYPE TAG
+ASSEMBLY_DATA="    ; ========================================="$'\n'
+ASSEMBLY_DATA+="    ; Variable: $VAR_NAME = null"$'\n'
+ASSEMBLY_DATA+="    ; Type: NULL"$'\n'
+ASSEMBLY_DATA+="    ; ========================================="$'\n'
+ASSEMBLY_DATA+="    ${VAR_NAME} dq 0    ; Null value (always 0)"$'\n'
+ASSEMBLY_DATA+="    ${VAR_NAME}_type dq TYPE_NULL    ; RUNTIME TYPE TAG"$'\n'
 
 # Create temporary file
 TEMP_FILE=$(mktemp)
@@ -62,7 +66,7 @@ while IFS= read -r line; do
     if [[ "$IN_DATA_SECTION" -eq 1 ]] && [[ "$line" == section* ]]; then
         # We're leaving data section, insert our data before leaving
         if [ "$DATA_INSERTED" -eq 0 ]; then
-            echo -e "$ASSEMBLY_DATA" >> "$TEMP_FILE"
+            echo "$ASSEMBLY_DATA" >> "$TEMP_FILE"
             DATA_INSERTED=1
         fi
         
@@ -76,14 +80,16 @@ done < "$OUTPUT_FILE"
 
 # If we're still in data section at EOF, append data
 if [[ "$IN_DATA_SECTION" -eq 1 ]] && [ "$DATA_INSERTED" -eq 0 ]; then
-    echo -e "$ASSEMBLY_DATA" >> "$TEMP_FILE"
+    echo "$ASSEMBLY_DATA" >> "$TEMP_FILE"
 fi
 
 # Replace the original file
 mv "$TEMP_FILE" "$OUTPUT_FILE"
 
-echo "Successfully added null variable declaration to $OUTPUT_FILE"
-echo "Variable: $VAR_NAME = null"
-echo "Type: null"
-echo "Note: In JavaScript, null represents an explicitly assigned 'no value'"
+echo "✓ Successfully added null variable: $VAR_NAME = null"
+echo "  - Runtime type tag: TYPE_NULL"
+echo "  - Value stored as: 0"
+echo "  - Variable accessible via: mov rax, [$VAR_NAME]"
+echo "  - Type accessible via: mov rdx, [${VAR_NAME}_type]"
+
 exit 0

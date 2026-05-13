@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # log.sh - Parses console.log() statements and generates assembly print calls
+# ALL type checking happens at ASSEMBLY RUNTIME
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -24,53 +25,6 @@ else
 fi
 
 LOG_ID="log_$(date +%s%N | md5sum | cut -c1-8)"
-
-# ----------------------------------------------------------------------
-# Get variable type from assembly file
-# ----------------------------------------------------------------------
-get_type() {
-    local var="$1"
-    
-        local var="$1"
-    
-    # Look for standard type comment format
-    local line=$(grep ";.*Variable: ${var}.*(type:" "$OUTPUT_FILE" 2>/dev/null)
-    if [ -n "$line" ]; then
-        if [[ "$line" =~ type:[[:space:]]*([a-z]+) ]]; then
-            echo "${BASH_REMATCH[1]}"
-            return
-        fi
-    fi
-    
-    # Check if variable points to float_buffer
-    if grep -q "^[[:space:]]*${var} dq float_buffer" "$OUTPUT_FILE" 2>/dev/null; then
-        echo "float"
-        return
-    fi
-
-    
-    if grep -q "^[[:space:]]*${var}_defined_flag db 0" "$OUTPUT_FILE" 2>/dev/null; then
-        echo "undefined"
-        return
-    fi
-    
-    if grep -q "^[[:space:]]*${var} dq [01][[:space:]]*;.*boolean" "$OUTPUT_FILE" 2>/dev/null; then
-        echo "boolean"
-        return
-    fi
-    
-    if grep -q "^[[:space:]]*${var} db " "$OUTPUT_FILE" 2>/dev/null; then
-        echo "string"
-        return
-    fi
-    
-    if grep -q "^[[:space:]]*${var} dq " "$OUTPUT_FILE" 2>/dev/null; then
-        echo "integer"
-        return
-    fi
-    
-    echo "undefined"
-}
 
 # ----------------------------------------------------------------------
 # Escape string for NASM
@@ -161,12 +115,13 @@ generate_strings() {
 
 # ----------------------------------------------------------------------
 # Generate print code for one argument
+# ALL TYPE DETERMINATION HAPPENS AT ASSEMBLY RUNTIME
 # ----------------------------------------------------------------------
 gen_print() {
     local arg="$1"
     local idx="$2"
     
-    # Handle literals
+    # Handle literals (types are known at generation time - these ARE literals)
     case "$arg" in
         true)
             echo "    mov rax, 1"
@@ -202,7 +157,7 @@ gen_print() {
         return
     fi
     
-    # Handle numeric literals
+    # Handle numeric literals (integers)
     if [[ "$arg" =~ ^-?[0-9]+$ ]]; then
         echo "    mov rax, $arg"
         echo "    mov rdx, TYPE_NUMBER"
@@ -218,48 +173,22 @@ gen_print() {
         return
     fi
     
-    # Must be a variable - get its type
-    local vtype=$(get_type "$arg")
-    
-    case "$vtype" in
-        integer)
-            echo "    mov rax, [${arg}]"
-            echo "    mov rdx, TYPE_NUMBER"
-            echo "    call print"
-            ;;
-        float)
-            echo "    mov rax, [${arg}]"
-            echo "    mov rdx, TYPE_FLOAT"
-            echo "    call print"
-            ;;
-        boolean)
-            echo "    mov rax, [${arg}]"
-            echo "    mov rdx, TYPE_BOOLEAN"
-            echo "    call print"
-            ;;
-        string)
-            echo "    mov rax, ${arg}"
-            echo "    mov rdx, TYPE_STRING"
-            echo "    call print"
-            ;;
-        null)
-            echo "    mov rax, 0"
-            echo "    mov rdx, TYPE_NULL"
-            echo "    call print"
-            ;;
-        undefined)
-            echo "    mov rax, 0"
-            echo "    mov rdx, TYPE_UNDEFINED"
-            echo "    call print"
-            ;;
-        *)
-            # Default fallback - try to treat as number
-            echo "    ; Warning: Unknown type for variable '${arg}', treating as undefined"
-            echo "    mov rax, 0"
-            echo "    mov rdx, TYPE_UNDEFINED"
-            echo "    call print"
-            ;;
-    esac
+    # For VARIABLES - CRITICAL FIX: 
+# - Numbers/Booleans: dereference [var] to get the value
+# - Strings: use var (the address of the string data)
+# - Floats: dereference [var] to get the pointer to the string buffer
+# The type tag tells us which at runtime
+echo "    ; Print variable '${arg}' - runtime type check"
+echo "    mov rdx, [${arg}_type]       ; Read the runtime type tag"
+echo "    cmp rdx, TYPE_STRING         ; Is it a string? (data is at var address)"
+echo "    je .${LOG_ID}_${idx}_as_string"
+echo "    ; Number, boolean, null, undefined, FLOAT - dereference the value"
+echo "    mov rax, [${arg}]"
+echo "    jmp .${LOG_ID}_${idx}_do_print"
+echo ".${LOG_ID}_${idx}_as_string:"
+echo "    mov rax, ${arg}              ; Load ADDRESS of string data"
+echo ".${LOG_ID}_${idx}_do_print:"
+echo "    call print"
 }
 
 # ----------------------------------------------------------------------
@@ -290,7 +219,7 @@ else
 fi
 
 # ----------------------------------------------------------------------
-# Insert into file
+# Insert into file - FIND THE ONE AND ONLY "mov rax, 60" in _start
 # ----------------------------------------------------------------------
 TEMP_FILE=$(mktemp)
 IN_DATA=0
@@ -299,6 +228,7 @@ DATA_DONE=0
 CODE_DONE=0
 
 while IFS= read -r line; do
+    # Track which section we're in
     if [[ "$line" == "section .data" ]]; then
         IN_DATA=1
     elif [[ "$line" == section* ]] && [ "$IN_DATA" -eq 1 ]; then
@@ -309,12 +239,14 @@ while IFS= read -r line; do
         IN_DATA=0
     fi
     
+    # Track when we enter _start
     if [[ "$line" == "_start:" ]]; then
         IN_START=1
     fi
     
+    # Only insert ONCE - before the FIRST mov rax, 60 AFTER _start
     if [ "$IN_START" -eq 1 ] && [ "$CODE_DONE" -eq 0 ] && \
-       [[ "$line" =~ ^[[:space:]]*mov[[:space:]]+rax,[[:space:]]*60 ]]; then
+       [[ "$line" =~ ^[[:space:]]*mov[[:space:]]+rax,[[:space:]]*60$ ]]; then
         echo "$PRINT_CODE" >> "$TEMP_FILE"
         CODE_DONE=1
     fi

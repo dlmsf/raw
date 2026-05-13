@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # string.sh - Converts JavaScript string declarations to NASM assembly data structures
+# Generates runtime type tags compatible with the new log.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
 cd "$SCRIPT_DIR/simple"
@@ -99,9 +100,6 @@ extract_string_content() {
     
     # If it contains concatenation with +, extract all string parts
     if [[ "$value" =~ \+ ]]; then
-        # For now, handle simple cases - in a real implementation,
-        # you would need to parse JavaScript expressions
-        # This is a simplified version that extracts quoted parts
         local result=""
         
         # Split by + and process each part
@@ -116,7 +114,6 @@ extract_string_content() {
                 result+="${BASH_REMATCH[1]}"
             else
                 # If it's not quoted, treat as string representation of the value
-                # For numbers, booleans, etc. that are concatenated with strings
                 result+="$part"
             fi
         done
@@ -133,9 +130,13 @@ extract_string_content() {
 STRING_CONTENT=$(extract_string_content "$VAR_VALUE")
 ESCAPED_STRING=$(escape_for_nasm "$STRING_CONTENT")
 
-# Generate assembly data - MATCH THE FORMAT THAT log.sh EXPECTS
-ASSEMBLY_DATA="\n    ; Variable: $VAR_NAME = \"$STRING_CONTENT\" (type: string)"
-ASSEMBLY_DATA+="\n    ${VAR_NAME} db $ESCAPED_STRING ; string"
+# Generate assembly data with RUNTIME TYPE TAG
+ASSEMBLY_DATA="    ; ========================================="$'\n'
+ASSEMBLY_DATA+="    ; Variable: $VAR_NAME = \"$STRING_CONTENT\""$'\n'
+ASSEMBLY_DATA+="    ; Type: STRING"$'\n'
+ASSEMBLY_DATA+="    ; ========================================="$'\n'
+ASSEMBLY_DATA+="    ${VAR_NAME} db $ESCAPED_STRING    ; String data"$'\n'
+ASSEMBLY_DATA+="    ${VAR_NAME}_type dq TYPE_STRING    ; RUNTIME TYPE TAG"$'\n'
 
 # Create temporary file
 TEMP_FILE=$(mktemp)
@@ -156,7 +157,7 @@ while IFS= read -r line; do
     if [[ "$IN_DATA_SECTION" -eq 1 ]] && [[ "$line" == section* ]]; then
         # We're leaving data section, insert our data before leaving
         if [ "$DATA_INSERTED" -eq 0 ]; then
-            echo -e "$ASSEMBLY_DATA" >> "$TEMP_FILE"
+            echo "$ASSEMBLY_DATA" >> "$TEMP_FILE"
             DATA_INSERTED=1
         fi
         
@@ -170,13 +171,16 @@ done < "$OUTPUT_FILE"
 
 # If we're still in data section at EOF, append data
 if [[ "$IN_DATA_SECTION" -eq 1 ]] && [ "$DATA_INSERTED" -eq 0 ]; then
-    echo -e "$ASSEMBLY_DATA" >> "$TEMP_FILE"
+    echo "$ASSEMBLY_DATA" >> "$TEMP_FILE"
 fi
 
 # Replace the original file
 mv "$TEMP_FILE" "$OUTPUT_FILE"
 
-echo "Successfully added string variable declaration to $OUTPUT_FILE"
-echo "Variable: $VAR_NAME = \"$STRING_CONTENT\""
-echo "Type: string"
+echo "✓ Successfully added string variable: $VAR_NAME = \"$STRING_CONTENT\""
+echo "  - Runtime type tag: TYPE_STRING"
+echo "  - String length: ${#STRING_CONTENT} characters"
+echo "  - Variable accessible via: mov rax, $VAR_NAME"
+echo "  - Type accessible via: mov rdx, [${VAR_NAME}_type]"
+
 exit 0

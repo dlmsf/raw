@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # undefined.sh - Converts JavaScript undefined declarations to NASM assembly data structures
+# Generates runtime type tags compatible with the new log.sh
 # In JavaScript, undefined represents a variable that has been declared but not assigned a value
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
@@ -38,11 +39,14 @@ if [[ ! "$VAR_VALUE" =~ ^[Uu]ndefined$ ]]; then
     exit 1
 fi
 
-# Generate assembly data - MATCH THE FORMAT THAT log.sh EXPECTS
-ASSEMBLY_DATA="\n    ; Variable: $VAR_NAME = undefined (type: undefined)"
-ASSEMBLY_DATA+="\n    ${VAR_NAME}_defined_flag db 0 ; 0 = undefined, 1 = defined"
-ASSEMBLY_DATA+="\n    ${VAR_NAME}_value dq 0 ; Placeholder for value"
-ASSEMBLY_DATA+="\n    ${VAR_NAME}:"
+# Generate assembly data with RUNTIME TYPE TAG
+ASSEMBLY_DATA="    ; ========================================="$'\n'
+ASSEMBLY_DATA+="    ; Variable: $VAR_NAME = undefined"$'\n'
+ASSEMBLY_DATA+="    ; Type: UNDEFINED"$'\n'
+ASSEMBLY_DATA+="    ; ========================================="$'\n'
+ASSEMBLY_DATA+="    ${VAR_NAME}_defined_flag db 0    ; 0 = undefined, 1 = defined"$'\n'
+ASSEMBLY_DATA+="    ${VAR_NAME} dq 0    ; Placeholder for future value"$'\n'
+ASSEMBLY_DATA+="    ${VAR_NAME}_type dq TYPE_UNDEFINED    ; RUNTIME TYPE TAG"$'\n'
 
 # Create temporary file
 TEMP_FILE=$(mktemp)
@@ -63,7 +67,7 @@ while IFS= read -r line; do
     if [[ "$IN_DATA_SECTION" -eq 1 ]] && [[ "$line" == section* ]]; then
         # We're leaving data section, insert our data before leaving
         if [ "$DATA_INSERTED" -eq 0 ]; then
-            echo -e "$ASSEMBLY_DATA" >> "$TEMP_FILE"
+            echo "$ASSEMBLY_DATA" >> "$TEMP_FILE"
             DATA_INSERTED=1
         fi
         
@@ -77,14 +81,16 @@ done < "$OUTPUT_FILE"
 
 # If we're still in data section at EOF, append data
 if [[ "$IN_DATA_SECTION" -eq 1 ]] && [ "$DATA_INSERTED" -eq 0 ]; then
-    echo -e "$ASSEMBLY_DATA" >> "$TEMP_FILE"
+    echo "$ASSEMBLY_DATA" >> "$TEMP_FILE"
 fi
 
 # Replace the original file
 mv "$TEMP_FILE" "$OUTPUT_FILE"
 
-echo "Successfully added undefined variable declaration to $OUTPUT_FILE"
-echo "Variable: $VAR_NAME = undefined"
-echo "Type: undefined"
-echo "Note: In JavaScript, undefined indicates the variable has been declared but not assigned a value"
+echo "✓ Successfully added undefined variable: $VAR_NAME = undefined"
+echo "  - Runtime type tag: TYPE_UNDEFINED"
+echo "  - Defined flag: 0 (can be changed to 1 when value is assigned)"
+echo "  - Variable accessible via: mov rax, [$VAR_NAME]"
+echo "  - Type accessible via: mov rdx, [${VAR_NAME}_type]"
+
 exit 0

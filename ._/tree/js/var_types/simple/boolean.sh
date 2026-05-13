@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # boolean.sh - Converts JavaScript boolean declarations to NASM assembly data structures
+# Generates runtime type tags compatible with the new log.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
 cd "$SCRIPT_DIR/simple"
@@ -55,9 +56,13 @@ if [ "$NORMALIZED_VALUE" = "true" ]; then
     BOOLEAN_DISPLAY="true"
 fi
 
-# Generate assembly data - MATCH THE FORMAT THAT log.sh EXPECTS
-ASSEMBLY_DATA="\n    ; Variable: $VAR_NAME = $BOOLEAN_DISPLAY (type: boolean)"
-ASSEMBLY_DATA+="\n    ${VAR_NAME} dq $BOOLEAN_NUMERIC    ; boolean: 0=false, 1=true"
+# Generate assembly data with RUNTIME TYPE TAG
+ASSEMBLY_DATA="    ; ========================================="$'\n'
+ASSEMBLY_DATA+="    ; Variable: $VAR_NAME = $BOOLEAN_DISPLAY"$'\n'
+ASSEMBLY_DATA+="    ; Type: BOOLEAN"$'\n'
+ASSEMBLY_DATA+="    ; ========================================="$'\n'
+ASSEMBLY_DATA+="    ${VAR_NAME} dq $BOOLEAN_NUMERIC    ; boolean value (0=false, 1=true)"$'\n'
+ASSEMBLY_DATA+="    ${VAR_NAME}_type dq TYPE_BOOLEAN    ; RUNTIME TYPE TAG"$'\n'
 
 # Create temporary file
 TEMP_FILE=$(mktemp)
@@ -78,7 +83,7 @@ while IFS= read -r line; do
     if [[ "$IN_DATA_SECTION" -eq 1 ]] && [[ "$line" == section* ]]; then
         # We're leaving data section, insert our data before leaving
         if [ "$DATA_INSERTED" -eq 0 ]; then
-            echo -e "$ASSEMBLY_DATA" >> "$TEMP_FILE"
+            echo "$ASSEMBLY_DATA" >> "$TEMP_FILE"
             DATA_INSERTED=1
         fi
         
@@ -92,13 +97,16 @@ done < "$OUTPUT_FILE"
 
 # If we're still in data section at EOF, append data
 if [[ "$IN_DATA_SECTION" -eq 1 ]] && [ "$DATA_INSERTED" -eq 0 ]; then
-    echo -e "$ASSEMBLY_DATA" >> "$TEMP_FILE"
+    echo "$ASSEMBLY_DATA" >> "$TEMP_FILE"
 fi
 
 # Replace the original file
 mv "$TEMP_FILE" "$OUTPUT_FILE"
 
-echo "Successfully added boolean variable declaration to $OUTPUT_FILE"
-echo "Variable: $VAR_NAME = $BOOLEAN_DISPLAY"
-echo "Type: boolean (stored as: $BOOLEAN_NUMERIC)"
+echo "✓ Successfully added boolean variable: $VAR_NAME = $BOOLEAN_DISPLAY"
+echo "  - Runtime type tag: TYPE_BOOLEAN"
+echo "  - Value stored as: $BOOLEAN_NUMERIC"
+echo "  - Variable accessible via: mov rax, [$VAR_NAME]"
+echo "  - Type accessible via: mov rdx, [${VAR_NAME}_type]"
+
 exit 0
