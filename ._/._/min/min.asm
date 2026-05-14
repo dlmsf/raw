@@ -818,7 +818,21 @@ _start:
     cmp al, 0x0D
     je .continue_peek
     
-    ; Check if next token starts a control statement
+    ; ========== FIX: Skip comments in the lookahead ==========
+    cmp al, '/'
+    jne .check_control           ; Not a slash, continue with control check
+    ; Check if this is a comment start
+    cmp rcx, 1
+    jbe .no_control_statement   ; Not enough chars for a comment
+    mov dl, [rbx + 1]
+    cmp dl, '/'
+    je .skip_line_comment_peek
+    cmp dl, '*'
+    je .skip_block_comment_peek
+    jmp .no_control_statement   ; Regular division, treat as no statement start
+
+.check_control:
+    ; Check if next token starts a control statement (original logic)
     cmp al, 'a'
     jb .no_control_statement
     cmp al, 'z'
@@ -830,6 +844,53 @@ _start:
     inc rbx
     dec rcx
     jmp .peek_next_non_ws
+
+; ---- New comment skipping routines (only used in peek) ----
+
+.skip_line_comment_peek:
+    ; Skip until newline
+    inc rbx          ; move past the second '/'
+    dec rcx
+.skip_line_loop:
+    cmp rcx, 0
+    je .no_control_statement
+    mov al, [rbx]
+    cmp al, 0x0A
+    je .after_line_comment_peek
+    inc rbx
+    dec rcx
+    jmp .skip_line_loop
+.after_line_comment_peek:
+    ; Skip the newline itself and continue peeking
+    inc rbx
+    dec rcx
+    jmp .peek_next_non_ws
+
+.skip_block_comment_peek:
+    ; Skip until '*/'
+    add rbx, 2      ; move past the '/*'
+    sub rcx, 2
+.skip_block_loop:
+    cmp rcx, 0
+    je .no_control_statement
+    mov al, [rbx]
+    cmp al, '*'
+    jne .advance_block_peek
+    cmp rcx, 1
+    je .advance_block_peek
+    mov dl, [rbx + 1]
+    cmp dl, '/'
+    je .after_block_comment_peek
+.advance_block_peek:
+    inc rbx
+    dec rcx
+    jmp .skip_block_loop
+.after_block_comment_peek:
+    ; Skip the '*/' and continue peeking
+    add rbx, 2
+    sub rcx, 2
+    jmp .peek_next_non_ws
+; ----------------------------------------------------------
 
 .should_add_semicolon:
     pop rax
