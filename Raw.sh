@@ -32,6 +32,10 @@ if [ $# -gt 0 ]; then
             # Store remaining arguments as tool args
             TOOL_ARGS="$@"
         fi
+    elif [ "$1" = "--tools" ]; then
+        # New flag: list all available tools
+        SPECIAL_MODE="--tools"
+        shift
     elif [ "$1" = "--asm" ]; then
         ASM_MODE="true"
         shift  # Remove --asm flag
@@ -60,6 +64,17 @@ if [ $# -gt 0 ]; then
             echo "RawJS - version unknown"
         fi
         exit 0
+    else
+        # NEW: Check if first argument is a tool name (starts with -- and not a known flag)
+        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--asm" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ]; then
+            # Extract tool name by removing leading --
+            TOOL_COMMAND="${1#--}"
+            TOOL_MODE="true"
+            shift  # Remove the tool flag
+            
+            # Store remaining arguments as tool args
+            TOOL_ARGS="$@"
+        fi
     fi
 fi
 
@@ -775,6 +790,8 @@ show_usage() {
     echo -e "${YELLOW}       bash Raw.sh --reset${NC}"
     echo -e "${YELLOW}       bash Raw.sh --test${NC}"
     echo -e "${YELLOW}       bash Raw.sh --tool [command] [args...]${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --<tool> [args...]${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --tools${NC}"
     echo -e "${YELLOW}       bash Raw.sh --version${NC}"
     echo -e "${YELLOW}       bash Raw.sh --asm [path/to/file.js] [args...]${NC}"
 }
@@ -902,11 +919,14 @@ handle_test() {
 
 # Function: Display all available tool commands
 show_tool_commands() {
+    echo -e "${BLUE}Available tools:${NC}"
+    echo ""
+    
     # Dynamically discover all tool_* functions (excluding non-tool functions)
     local tool_functions=$(declare -F | grep -o 'tool_[a-zA-Z0-9_]*' | grep -v 'tool_mode\|tool_command\|tool_args\|tool_commands' | sed 's/^tool_//' | sort)
     
     if [ -z "$tool_functions" ]; then
-        echo "No tools available"
+        echo "  No tools available"
         return 0
     fi
     
@@ -964,11 +984,15 @@ show_tool_commands() {
         if [ -f "$tmp_dir/${tool_name}.desc" ]; then
             description=$(cat "$tmp_dir/${tool_name}.desc")
         fi
-        printf "  %-${max_tool_length}s | %s\n" "${tool_name}" "${description}"
+        printf "  --%-${max_tool_length}s | %s\n" "${tool_name}" "${description}"
     done <<< "$tool_functions"
     
     # Cleanup
     rm -rf "$tmp_dir"
+    
+    echo ""
+    echo -e "${YELLOW}Usage: bash Raw.sh --<tool> [args...]${NC}"
+    echo -e "${YELLOW}   or: bash Raw.sh --tool <tool> [args...]${NC}"
 }
 
 # ============================================
@@ -989,7 +1013,7 @@ show_tool_commands() {
 # ============================================
 
 # Function: Handle dual tool command
-# Usage: bash Raw.sh --tool dual <arg1> <arg2> [arg3] [arg4...]
+# Usage: bash Raw.sh --dual <arg1> <arg2> [arg3] [arg4...]
 # This command can accept any number of arguments and passes them all
 tool_dual() {
     
@@ -1017,7 +1041,7 @@ tool_info() {
 # Example of adding a new command:
 #
 # Function: Handle compile tool command
-# Usage: bash Raw.sh --tool compile <source_file> <output_file>
+# Usage: bash Raw.sh --compile <source_file> <output_file>
 # tool_compile() {
 #     local source_file="$1"
 #     local output_file="$2"
@@ -1033,7 +1057,7 @@ tool_info() {
 # Example of adding a command with variable arguments:
 #
 # Function: Handle process tool command
-# Usage: bash Raw.sh --tool process <file> [options...]
+# Usage: bash Raw.sh --process <file> [options...]
 # tool_process() {
 #     local file="$1"
 #     shift
@@ -1046,6 +1070,11 @@ tool_info() {
 #     
 #     execute_file "log" "processor/main.sh" "$file" $options
 # }
+#
+# IMPORTANT: When adding new tools, they will AUTOMATICALLY work with:
+#   - Short syntax: bash Raw.sh --<toolname> [args...]
+#   - Long syntax:  bash Raw.sh --tool <toolname> [args...]
+#   - Listing:      bash Raw.sh --tools
 # ============================================
 
 # Function: Route tool commands to appropriate handler
@@ -1122,7 +1151,13 @@ main_flow() {
         exit $?
     fi
     
-    # Step 2: Check for asm-only mode (--asm without JS file)
+    # Step 2: Check for --tools special mode
+    if [ "$SPECIAL_MODE" = "--tools" ]; then
+        show_tool_commands
+        exit 0
+    fi
+    
+    # Step 3: Check for asm-only mode (--asm without JS file)
     if [ "$ASM_MODE" = "true" ] && [ "$ASM_ONLY_MODE" = "true" ]; then
         # Check if dev directory exists
         if [ ! -d "$SCRIPT_DIR/dev" ]; then
@@ -1139,7 +1174,7 @@ main_flow() {
         exit $?
     fi
     
-    # Step 3: Check for special modes
+    # Step 4: Check for special modes
     if [ "$SPECIAL_MODE" = "--reset" ]; then
         handle_reset
         exit $?
@@ -1148,7 +1183,7 @@ main_flow() {
         exit $?
     fi
     
-    # Step 4: Normal execution flow (only if no special mode)
+    # Step 5: Normal execution flow (only if no special mode)
     # Compile and copy only if ./dev doesn't exist (based on script's directory)
     if [ ! -d "$SCRIPT_DIR/dev" ]; then
         compile_and_copy
@@ -1160,7 +1195,7 @@ main_flow() {
         fi
     fi
     
-    # Step 5: Process the JS file if provided
+    # Step 6: Process the JS file if provided
     if [ -n "$JS_FILE" ]; then
         process_js_file "$JS_FILE" $JS_ARGS
         if [ $? -ne 0 ]; then
