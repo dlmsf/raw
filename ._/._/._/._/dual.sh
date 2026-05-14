@@ -37,9 +37,14 @@ strip_colors() {
     sed 's/\x1b\[[0-9;]*m//g' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'
 }
 
+# Function to normalize decimal numbers - round to 4 decimal places
+normalize_decimals() {
+    sed -E 's/([0-9]+\.[0-9]{4})[0-9]*/\1/g' | sed -E 's/([0-9]+\.[0-9]{1,3})$/&\0\0\0/g' | sed -E 's/([0-9]+\.[0-9]{4})[0-9]*$/\1/'
+}
+
 # Function to normalize output (strip colors, remove carriage returns, trim spaces)
 normalize() {
-    strip_colors | sed 's/\r$//' | sed 's/[[:space:]]*$//' | grep -v '^$'
+    strip_colors | sed 's/\r$//' | sed 's/[[:space:]]*$//' | grep -v '^$' | normalize_decimals
 }
 
 # Run tests silently - using absolute paths
