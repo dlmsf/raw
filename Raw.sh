@@ -156,47 +156,18 @@ dev_error() {
     fi
 }
 
-# Function: Get the appropriate basm script path
-get_basm_script() {
-    local mode="$1"  # normal, silent, log
-    
-    # Base path for basm scripts (based on script's directory)
-    local basm_base="$SCRIPT_DIR/dev/basm"
-    
-    case "$mode" in
-        "silent")
-            echo "$basm_base/sbasm.sh"
-            ;;
-        "log")
-            echo "$basm_base/logbasm.sh"
-            ;;
-        "normal"|*)
-            echo "$basm_base/basm.sh"
-            ;;
-    esac
-}
-
 # Function: Resolve file path based on EXECUTION_SOURCE
 # This is for execution files (scripts, asm, binaries) NOT for the JS file
 resolve_file_path() {
     local file_path="$1"
-    
-    # Remove leading ./ if present
     file_path="${file_path#./}"
-    
     case "$EXECUTION_SOURCE" in
-        "source")
-            # Use ._ directory (based on script's directory)
-            echo "$SCRIPT_DIR/._/$file_path"
-            ;;
-        "dev"|*)
-            # Use dev directory (based on script's directory)
-            echo "$SCRIPT_DIR/dev/$file_path"
-            ;;
+        "source") echo "$SCRIPT_DIR/._/$file_path" ;;
+        "dev"|*)  echo "$SCRIPT_DIR/dev/$file_path" ;;
     esac
 }
 
-# Function: Execute a file using basm
+# Function: Execute a file using the unified basm.sh
 # Usage: execute_file <mode> <file_path> [additional_args...]
 #   mode: normal, silent, log
 #   file_path: path relative to dev or ._ directory
@@ -211,8 +182,8 @@ execute_file() {
         mode="log"
     fi
     
-    # Get the basm script
-    local basm_script=$(get_basm_script "$mode")
+    # Path to the single unified basm.sh
+    local basm_script="$SCRIPT_DIR/dev/basm/basm.sh"
     
     # Check if basm script exists
     if [ ! -f "$basm_script" ]; then
@@ -232,26 +203,23 @@ execute_file() {
         return 1
     fi
     
-    # Execute with appropriate verbosity
+    # Execute with appropriate mode
     case "$mode" in
         "silent")
-            # Silent mode: suppress all output from basm
             if [[ "$full_path" == *.sh ]]; then
                 bash "$full_path" $additional_args >/dev/null 2>&1
             else
-                "$basm_script" "$full_path" $additional_args >/dev/null 2>&1
+                "$basm_script" --silent "$full_path" $additional_args
             fi
             ;;
         "log")
-            # Log mode: show execution output but not compilation logs
             if [[ "$full_path" == *.sh ]]; then
                 bash "$full_path" $additional_args
             else
-                "$basm_script" "$full_path" $additional_args
+                "$basm_script" --log "$full_path" $additional_args
             fi
             ;;
         "normal"|*)
-            # Normal mode: show all output
             if [[ "$full_path" == *.sh ]]; then
                 bash "$full_path" $additional_args
             else
