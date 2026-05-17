@@ -23,6 +23,10 @@ if [[ ! -d "$TESTS_DIR" ]]; then
     exit 1
 fi
 
+# Arrays to track test results
+declare -a passed_tests
+declare -a failed_tests
+
 echo "=== Starting test generation phase ==="
 echo "Entering tests directory: ${TESTS_DIR}"
 cd "$TESTS_DIR"
@@ -91,13 +95,47 @@ for js_file in $js_files; do
     # Execute dual.sh with the js file as argument
     if bash "$DUAL_SCRIPT" "$test_path"; then
         echo "✓ Test ${test_num} completed successfully"
+        passed_tests+=("${test_num}")
     else
         exit_code=$?
         echo "✗ Test ${test_num} failed with exit code: ${exit_code}"
-        # Uncomment the next line if you want to stop on first failure
-        # exit $exit_code
+        failed_tests+=("${test_num}")
     fi
     echo ""
 done
 
 echo "=== All tests completed ==="
+echo ""
+
+# Print final summary
+echo "╔══════════════════════════════════════════════════╗"
+echo "║              TEST EXECUTION SUMMARY              ║"
+echo "╚══════════════════════════════════════════════════╝"
+echo ""
+
+total_tests=$(( ${#passed_tests[@]} + ${#failed_tests[@]} ))
+
+if [[ ${#passed_tests[@]} -gt 0 ]]; then
+    echo "✓ PASSED (${#passed_tests[@]}/${total_tests}):"
+    for test in "${passed_tests[@]}"; do
+        echo "  • Test ${test}"
+    done
+    echo ""
+fi
+
+if [[ ${#failed_tests[@]} -gt 0 ]]; then
+    echo "✗ FAILED (${#failed_tests[@]}/${total_tests}):"
+    for test in "${failed_tests[@]}"; do
+        echo "  • Test ${test}"
+    done
+    echo ""
+fi
+
+# Calculate and display success rate
+success_rate=$(( (${#passed_tests[@]} * 100) / total_tests ))
+echo "Success rate: ${success_rate}% (${#passed_tests[@]}/${total_tests} tests passed)"
+
+# Exit with non-zero if any tests failed
+if [[ ${#failed_tests[@]} -gt 0 ]]; then
+    exit 1
+fi
