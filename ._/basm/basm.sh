@@ -30,22 +30,41 @@ while [ $# -gt 0 ]; do
             OUTPUT_ONLY=true
             shift
             # Check if next argument could be an output filename
-            # Only treat it as output name if it doesn't start with - and isn't empty
             if [ $# -gt 0 ]; then
+                # Don't consume the next argument if it's a flag or looks like an input file
                 case "$1" in
                     --*|-*)
-                        # It's another flag, don't consume it as output name
+                        # It's another flag, don't consume it
+                        ;;
+                    *.asm)
+                        # It's an assembly file, don't consume it as output name
                         ;;
                     *)
-                        # It's likely a filename, but could be the input .asm file
-                        # We'll check if it ends with .asm or if it's a valid file
-                        if [ -f "$1" ] || echo "$1" | grep -q '\.asm$'; then
-                            # This is probably the input file, don't consume it
-                            :
+                        # Check if it's an existing .asm file (case insensitive extension check)
+                        if [ -f "$1" ]; then
+                            case "$1" in
+                                *.asm|*.ASM)
+                                    # It's an existing .asm file, don't consume it
+                                    ;;
+                                *)
+                                    # It's some other existing file, treat as output name
+                                    OUTPUT_NAME="$1"
+                                    shift
+                                    ;;
+                            esac
                         else
-                            # Treat as output name
-                            OUTPUT_NAME="$1"
-                            shift
+                            # File doesn't exist, could be output name
+                            # But check if it ends with .asm (likely input file that doesn't exist yet)
+                            case "$1" in
+                                *.asm|*.ASM)
+                                    # Likely an input file, don't consume
+                                    ;;
+                                *)
+                                    # Treat as output name
+                                    OUTPUT_NAME="$1"
+                                    shift
+                                    ;;
+                            esac
                         fi
                         ;;
                 esac
@@ -145,6 +164,50 @@ print_important() {
     fi
 }
 
+# print_timing: ONLY shows timing in default (normal) mode
+print_timing() {
+    if [ "$MODE" = "normal" ]; then
+        print_color "cyan" "Total execution time: $1"
+    fi
+}
+
+# --- Timing helper functions ---------------------------------------
+# Get precise timestamp in nanoseconds (or microseconds as fallback)
+get_time_ns() {
+    if date +%s%N >/dev/null 2>&1; then
+        date +%s%N
+    elif [ -f /proc/uptime ]; then
+        # Fallback: use /proc/uptime for centisecond precision
+        awk '{printf "%d%02d0000000", $1, $2}' /proc/uptime 2>/dev/null
+    else
+        # Last resort: seconds only
+        date +%s000000000
+    fi
+}
+
+# Calculate and format elapsed time
+format_elapsed() {
+    local start_ns="$1"
+    local end_ns="$2"
+    local elapsed_ns=$((end_ns - start_ns))
+    
+    # Convert to human-readable format with milliseconds
+    local seconds=$((elapsed_ns / 1000000000))
+    local milliseconds=$(((elapsed_ns % 1000000000) / 1000000))
+    local microseconds=$(((elapsed_ns % 1000000) / 1000))
+    local nanoseconds=$((elapsed_ns % 1000))
+    
+    if [ $seconds -gt 0 ]; then
+        printf "%d.%03d%03d%03d seconds" $seconds $milliseconds $microseconds $nanoseconds
+    elif [ $milliseconds -gt 0 ]; then
+        printf "%d.%03d%03d ms" $milliseconds $microseconds $nanoseconds
+    elif [ $microseconds -gt 0 ]; then
+        printf "%d.%03d µs" $microseconds $nanoseconds
+    else
+        printf "%d ns" $nanoseconds
+    fi
+}
+
 # --- Banner (only in normal mode) ----------------------------------
 if [ "$MODE" = "normal" ]; then
     print_color "cyan" "basm - Universal Assembly/Bash/Binary Runner"
@@ -190,7 +253,7 @@ PROGRAM_ARGS="$@"
 if [ "$OUTPUT_ONLY" = true ]; then
     # Check if input is .asm file
     case "$INPUT_FILE" in
-        *.asm)
+        *.asm|*.ASM)
             if [ "$MODE" = "normal" ]; then
                 print_color "magenta" "Binary generation mode activated for: $INPUT_FILE"
                 if [ -n "$OUTPUT_NAME" ]; then
@@ -240,8 +303,8 @@ detect_file_type() {
     fi
 
     case "$full_path" in
-        *.asm) echo "asm:$full_path" ;;
-        *.sh) echo "sh:$full_path" ;;
+        *.asm|*.ASM) echo "asm:$full_path" ;;
+        *.sh|*.SH) echo "sh:$full_path" ;;
         *)
             if [ -x "$full_path" ]; then
                 echo "binary:$full_path"
@@ -351,6 +414,7 @@ run_asm() {
     chmod +x "$NASM_BINARY" 2>/dev/null
 
     BASENAME="$(basename "$asm_file" .asm)"
+    BASENAME="$(basename "$BASENAME" .ASM)"
     OUTPUT_DIR="$CALLER_DIR/.basm_tmp_$$"
     OBJECT_FILE="$OUTPUT_DIR/${BASENAME}.o"
     
@@ -368,13 +432,17 @@ run_asm() {
     rm -rf "$OUTPUT_DIR"
     mkdir -p "$OUTPUT_DIR"
 
-    # Compile
+        # Compile (with optional warning suppression)
+    NASM_FLAGS="-f $FORMAT"
+    # Uncomment next line to suppress the implicit ABS deprecation warning
+    # NASM_FLAGS="$NASM_FLAGS -w-imp-abs-deprecated"
+    
     if [ "$MODE" = "normal" ]; then
         print_color "blue" "Step 1: Compiling $asm_file..."
-        "$NASM_BINARY" -f "$FORMAT" "$asm_file" -o "$OBJECT_FILE"
+        "$NASM_BINARY" $NASM_FLAGS "$asm_file" -o "$OBJECT_FILE"
         NASM_EXIT=$?
     else
-        "$NASM_BINARY" -f "$FORMAT" "$asm_file" -o "$OBJECT_FILE" > /dev/null 2>&1
+        "$NASM_BINARY" $NASM_FLAGS "$asm_file" -o "$OBJECT_FILE" > /dev/null 2>&1
         NASM_EXIT=$?
     fi
 
@@ -437,7 +505,7 @@ run_asm() {
         return 0
     fi
 
-    # Execute
+    # Execute with timing (only in normal mode)
     if [ "$MODE" = "normal" ]; then
         print_color "blue" "Step 3: Running $BASENAME..."
         if [ -n "$args" ]; then
@@ -446,16 +514,27 @@ run_asm() {
         print_color "blue" "========== PROGRAM OUTPUT =========="
     fi
 
+    # Measure execution time only in normal mode
+    if [ "$MODE" = "normal" ]; then
+        local start_time=$(get_time_ns)
+    fi
+    
     if [ "$MODE" = "silent" ]; then
         (cd "$CALLER_DIR" && "$BINARY_FILE" $args) > /dev/null 2>&1
     else
         (cd "$CALLER_DIR" && "$BINARY_FILE" $args)
     fi
     PROGRAM_EXIT=$?
+    
+    if [ "$MODE" = "normal" ]; then
+        local end_time=$(get_time_ns)
+        local elapsed=$(format_elapsed "$start_time" "$end_time")
+    fi
 
     if [ "$MODE" = "normal" ]; then
         print_color "blue" "===================================="
         print_color "yellow" "Program exited with code: $PROGRAM_EXIT"
+        print_timing "$elapsed"
     fi
 
     rm -rf "$OUTPUT_DIR"
@@ -480,16 +559,27 @@ run_sh() {
         print_color "blue" "========== SCRIPT OUTPUT =========="
     fi
 
+    # Measure execution time only in normal mode
+    if [ "$MODE" = "normal" ]; then
+        local start_time=$(get_time_ns)
+    fi
+    
     if [ "$MODE" = "silent" ]; then
         (cd "$CALLER_DIR" && "$RUNNER_SHELL_PATH" "$sh_file" $args) > /dev/null 2>&1
     else
         (cd "$CALLER_DIR" && "$RUNNER_SHELL_PATH" "$sh_file" $args)
     fi
     SCRIPT_EXIT=$?
+    
+    if [ "$MODE" = "normal" ]; then
+        local end_time=$(get_time_ns)
+        local elapsed=$(format_elapsed "$start_time" "$end_time")
+    fi
 
     if [ "$MODE" = "normal" ]; then
         print_color "blue" "==================================="
         print_color "yellow" "Script exited with code: $SCRIPT_EXIT"
+        print_timing "$elapsed"
     fi
 
     return $SCRIPT_EXIT
@@ -506,16 +596,27 @@ run_binary() {
         print_color "blue" "========== PROGRAM OUTPUT =========="
     fi
 
+    # Measure execution time only in normal mode
+    if [ "$MODE" = "normal" ]; then
+        local start_time=$(get_time_ns)
+    fi
+    
     if [ "$MODE" = "silent" ]; then
         (cd "$CALLER_DIR" && "$binary_file" $args) > /dev/null 2>&1
     else
         (cd "$CALLER_DIR" && "$binary_file" $args)
     fi
     BINARY_EXIT=$?
+    
+    if [ "$MODE" = "normal" ]; then
+        local end_time=$(get_time_ns)
+        local elapsed=$(format_elapsed "$start_time" "$end_time")
+    fi
 
     if [ "$MODE" = "normal" ]; then
         print_color "blue" "===================================="
         print_color "yellow" "Program exited with code: $BINARY_EXIT"
+        print_timing "$elapsed"
     fi
 
     return $BINARY_EXIT
@@ -532,16 +633,27 @@ run_script() {
         print_color "blue" "========== SCRIPT OUTPUT =========="
     fi
 
+    # Measure execution time only in normal mode
+    if [ "$MODE" = "normal" ]; then
+        local start_time=$(get_time_ns)
+    fi
+    
     if [ "$MODE" = "silent" ]; then
         (cd "$CALLER_DIR" && "$script_file" $args) > /dev/null 2>&1
     else
         (cd "$CALLER_DIR" && "$script_file" $args)
     fi
     SCRIPT_EXIT=$?
+    
+    if [ "$MODE" = "normal" ]; then
+        local end_time=$(get_time_ns)
+        local elapsed=$(format_elapsed "$start_time" "$end_time")
+    fi
 
     if [ "$MODE" = "normal" ]; then
         print_color "blue" "==================================="
         print_color "yellow" "Script exited with code: $SCRIPT_EXIT"
+        print_timing "$elapsed"
     fi
 
     return $SCRIPT_EXIT
@@ -637,12 +749,22 @@ main() {
                     echo "========== OUTPUT =========="
                 fi
 
+                # Measure execution time only in normal mode
+                if [ "$MODE" = "normal" ]; then
+                    local start_time=$(get_time_ns)
+                fi
+                
                 if [ "$MODE" = "silent" ]; then
                     (cd "$CALLER_DIR" && "$full_path" $PROGRAM_ARGS 2>/dev/null) > /dev/null 2>&1
                 else
                     (cd "$CALLER_DIR" && "$full_path" $PROGRAM_ARGS 2>/dev/null)
                 fi
                 EXIT_CODE=$?
+                
+                if [ "$MODE" = "normal" ]; then
+                    local end_time=$(get_time_ns)
+                    local elapsed=$(format_elapsed "$start_time" "$end_time")
+                fi
 
                 if [ $EXIT_CODE -eq 126 ] || [ $EXIT_CODE -eq 127 ]; then
                     print_color "red" "Execution failed (exit code: $EXIT_CODE)"
@@ -663,6 +785,7 @@ main() {
                     if [ "$MODE" = "normal" ]; then
                         echo "==================================="
                         print_color "yellow" "Program exited with code: $EXIT_CODE"
+                        print_timing "$elapsed"
                     fi
                     return $EXIT_CODE
                 fi ;;
