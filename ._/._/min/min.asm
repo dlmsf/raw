@@ -84,6 +84,7 @@ _start:
     xor r13, r13                ; Escape next char flag
     xor r14, r14                ; Last non-whitespace char
     xor r15, r15                ; In object/array literal flag (0=no, 1=yes)
+    xor r8, r8                  ; Regex state: 0=not in regex, 1=inside regex
     
 .minify_loop:
     test rcx, rcx
@@ -91,15 +92,21 @@ _start:
     
     mov al, [rsi]
     
-    ; Handle comments first
+    ; Handle regex state first (before strings/comments)
+    test r8, r8
+    jnz .in_regex
+    
+    ; Handle comments - but NOT when inside a string
+    test r11, r11
+    jnz .in_string
     test r12, r12
     jnz .in_comment
     
-    ; Handle strings
+    ; Handle strings (single, double, AND template)
     test r11, r11
     jnz .in_string
     
-    ; Not in string or comment
+    ; Not in string, comment, or regex
     cmp al, "'"
     je .start_string_single
     cmp al, '"'
@@ -107,7 +114,7 @@ _start:
     cmp al, '`'
     je .start_string_template
     cmp al, '/'
-    je .possible_comment
+    je .handle_slash
     
     ; Update object/array literal tracking
     cmp al, '{'
@@ -140,6 +147,94 @@ _start:
     ; Update last character
     mov r14, rax
     jmp .next_char
+
+; ===================== SLASH HANDLER =====================
+.handle_slash:
+    ; Need to look at next character to decide
+    cmp rcx, 1
+    je .slash_copy              ; End of input, just copy slash
+    
+    mov bl, [rsi + 1]
+    ; Check for line comment //
+    cmp bl, '/'
+    je .start_line_comment
+    ; Check for block comment /*
+    cmp bl, '*'
+    je .start_block_comment
+    
+    ; Not a comment -> check for regex start
+    cmp r14b, '('
+    je .start_regex
+    cmp r14b, '['
+    je .start_regex
+    cmp r14b, ','
+    je .start_regex
+    cmp r14b, '='
+    je .start_regex
+    cmp r14b, ':'
+    je .start_regex
+    cmp r14b, '!'
+    je .start_regex
+    cmp r14b, '&'
+    je .start_regex
+    cmp r14b, '|'
+    je .start_regex
+    cmp r14b, '?'
+    je .start_regex
+    cmp r14b, '~'
+    je .start_regex
+    cmp r14b, '{'
+    je .start_regex
+    cmp r14b, ';'
+    je .start_regex
+    
+.slash_copy:
+    ; Treat slash as division operator - just copy it
+    mov [rdi], al
+    inc rdi
+    mov r14, rax
+    jmp .next_char
+
+.start_regex:
+    ; Enter regex state, copy the opening '/'
+    mov r8, 1                   ; Regex state active
+    xor r13, r13                ; Reset escape flag for regex
+    mov [rdi], al
+    inc rdi
+    mov r14, rax                ; Last char is '/'
+    jmp .next_char
+
+; ===================== REGEX BODY HANDLER =====================
+.in_regex:
+    ; Copy current character
+    mov [rdi], al
+    inc rdi
+    mov r14, rax
+    
+    ; Check for escape sequence
+    cmp r13, 1
+    je .reset_regex_escape
+    
+    cmp al, '\'
+    je .set_regex_escape
+    
+    ; Check for closing '/'
+    cmp al, '/'
+    jne .next_char
+    
+    ; End of regex literal
+    xor r8, r8                  ; Exit regex state
+    xor r13, r13                ; Clear escape flag
+    jmp .next_char
+
+.set_regex_escape:
+    mov r13, 1
+    jmp .next_char
+
+.reset_regex_escape:
+    mov r13, 0
+    jmp .next_char
+; ============================================================
 
 .handle_close_brace:
     ; Handle closing brace
@@ -818,7 +913,7 @@ _start:
     cmp al, 0x0D
     je .continue_peek
     
-    ; ========== FIX: Skip comments in the lookahead ==========
+    ; Skip comments in the lookahead
     cmp al, '/'
     jne .check_control           ; Not a slash, continue with control check
     ; Check if this is a comment start
@@ -845,7 +940,7 @@ _start:
     dec rcx
     jmp .peek_next_non_ws
 
-; ---- New comment skipping routines (only used in peek) ----
+; ---- Comment skipping routines (only used in peek) ----
 
 .skip_line_comment_peek:
     ; Skip until newline
@@ -983,16 +1078,19 @@ _start:
     jmp .minify_loop
 
 .in_string:
+    ; In string mode, copy character WITHOUT minifying
     mov [rdi], al
     inc rdi
     mov r14, rax                ; Save last char
     
+    ; Handle escape sequences
     cmp r13, 1
     je .reset_escape
     
     cmp al, '\'
     je .set_escape
     
+    ; Check for end of string based on type
     cmp r11, 1
     je .check_single_quote
     cmp r11, 2
@@ -1026,21 +1124,6 @@ _start:
 
 .reset_escape:
     mov r13, 0
-    jmp .next_char
-
-.possible_comment:
-    cmp rcx, 1
-    je .copy_char
-    
-    mov bl, [rsi + 1]
-    cmp bl, '/'
-    je .start_line_comment
-    cmp bl, '*'
-    je .start_block_comment
-    
-    mov [rdi], al
-    inc rdi
-    mov r14, rax                ; Save last char
     jmp .next_char
 
 .start_line_comment:
