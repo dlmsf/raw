@@ -131,6 +131,39 @@ VERBOSE_DEV="${VERBOSE_DEV:-false}"  # Default: completely silent
 # ============================================
 EXECUTION_SOURCE="${EXECUTION_SOURCE:-dev}"  # Default: use compiled binaries from ./dev
 
+# ============================================
+# TOOL WORKING DIRECTORY CONFIGURATION
+# ============================================
+# WORKING DIRECTORY TYPES:
+#   "global"  - Execute from script's own directory ($SCRIPT_DIR)
+#   "caller"  - Execute from user's current working directory (where command was called)
+#   "file"    - Execute from the directory containing the executed file itself
+#
+# Add your tool commands here to configure their working directory
+# ============================================
+get_tool_working_dir() {
+    local tool_name="$1"
+    case "$tool_name" in
+        # =====================================================================
+        # TOOL COMMANDS - Configure working directory for each tool
+        # =====================================================================
+        "dual")     echo "file" ;;
+        "info")     echo "caller" ;;
+        
+        # =====================================================================
+        # ADD YOUR TOOLS HERE with their working directory
+        # =====================================================================
+        # "compile")  echo "global" ;;
+        # "process")  echo "caller" ;;
+        # "analyze")  echo "file" ;;
+        
+        # =====================================================================
+        # DEFAULT - uses "global" if not specified
+        # =====================================================================
+        *) echo "global" ;;
+    esac
+}
+
 # Colors for output (only used when VERBOSE_DEV=true)
 if [ "$VERBOSE_DEV" = "true" ]; then
     RED='\033[0;31m'
@@ -168,13 +201,22 @@ resolve_file_path() {
 }
 
 # Function: Execute a file using the unified basm.sh
-# Usage: execute_file <mode> <file_path> [additional_args...]
+# Usage: execute_file <mode> <file_path> [working_dir_type] [additional_args...]
 #   mode: normal, silent, log
 #   file_path: path relative to dev or ._ directory
+#   working_dir_type: "caller", "file", or "global" (optional, defaults to "global")
 execute_file() {
     local mode="$1"
     local file_path="$2"
     shift 2
+    
+    # Check if next argument is a working directory type
+    local working_dir_type="global"
+    if [ "$1" = "caller" ] || [ "$1" = "file" ] || [ "$1" = "global" ]; then
+        working_dir_type="$1"
+        shift
+    fi
+    
     local additional_args="$@"
     
     # Override mode if FORCE_LOG_MODE is true (only affects normal JS execution)
@@ -203,27 +245,41 @@ execute_file() {
         return 1
     fi
     
-    # Execute with appropriate mode
+    # Determine the working directory based on type
+    local working_dir="$SCRIPT_DIR"  # Default: global (script's directory)
+    case "$working_dir_type" in
+        "caller")
+            working_dir="$CALLER_DIR"  # Use caller's directory
+            ;;
+        "file")
+            working_dir="$(dirname "$full_path")"  # Use file's directory
+            ;;
+        "global"|*)
+            working_dir="$SCRIPT_DIR"  # Use script's directory
+            ;;
+    esac
+    
+    # Execute with appropriate mode and working directory
     case "$mode" in
         "silent")
             if [[ "$full_path" == *.sh ]]; then
-                bash "$full_path" $additional_args >/dev/null 2>&1
+                (cd "$working_dir" && bash "$full_path" $additional_args >/dev/null 2>&1)
             else
-                "$basm_script" --silent "$full_path" $additional_args
+                (cd "$working_dir" && "$basm_script" --silent "$full_path" $additional_args)
             fi
             ;;
         "log")
             if [[ "$full_path" == *.sh ]]; then
-                bash "$full_path" $additional_args
+                (cd "$working_dir" && bash "$full_path" $additional_args)
             else
-                "$basm_script" --log "$full_path" $additional_args
+                (cd "$working_dir" && "$basm_script" --log "$full_path" $additional_args)
             fi
             ;;
         "normal"|*)
             if [[ "$full_path" == *.sh ]]; then
-                bash "$full_path" $additional_args
+                (cd "$working_dir" && bash "$full_path" $additional_args)
             else
-                "$basm_script" "$full_path" $additional_args
+                (cd "$working_dir" && "$basm_script" "$full_path" $additional_args)
             fi
             ;;
     esac
@@ -935,6 +991,9 @@ show_tool_commands() {
                 description="${description:0:$((desc_max - 3))}..."
             fi
             
+            # Get working directory type for this tool
+            local working_dir=$(get_tool_working_dir "$tool_name")
+            
             # Output to temp file
             echo "${description}" > "$tmp_dir/${tool_name}.desc"
         ) &
@@ -952,7 +1011,10 @@ show_tool_commands() {
         if [ -f "$tmp_dir/${tool_name}.desc" ]; then
             description=$(cat "$tmp_dir/${tool_name}.desc")
         fi
-        printf "  --%-${max_tool_length}s | %s\n" "${tool_name}" "${description}"
+        
+        # Get working directory type for display
+        local working_dir=$(get_tool_working_dir "$tool_name")
+        printf "  --%-${max_tool_length}s | %s [dir: %s]\n" "${tool_name}" "${description}" "${working_dir}"
     done <<< "$tool_functions"
     
     # Cleanup
@@ -961,6 +1023,11 @@ show_tool_commands() {
     echo ""
     echo -e "${YELLOW}Usage: bash Raw.sh --<tool> [args...]${NC}"
     echo -e "${YELLOW}   or: bash Raw.sh --tool <tool> [args...]${NC}"
+    echo ""
+    echo -e "${BLUE}Working directory types:${NC}"
+    echo -e "  global  - Execute from Raw.sh directory ($SCRIPT_DIR)"
+    echo -e "  caller  - Execute from where you called the command ($CALLER_DIR)"
+    echo -e "  file    - Execute from the tool file's own directory"
 }
 
 # ============================================
@@ -974,9 +1041,11 @@ show_tool_commands() {
 #     # You can access individual args: $1, $2, $3, etc.
 #     # Or pass all args: "$@"
 #     
-#     # Your execution logic here
-#     # Use execute_file with all arguments
-#     execute_file "normal" "path/to/your/script.sh" "$@"
+#     # Get working directory type from configuration
+#     local working_dir=$(get_tool_working_dir "command_name")
+#     
+#     # Execute with automatic working directory handling
+#     execute_file "normal" "path/to/your/script.sh" "$working_dir" "$@"
 # }
 # ============================================
 
@@ -984,21 +1053,21 @@ show_tool_commands() {
 # Usage: bash Raw.sh --dual <arg1> <arg2> [arg3] [arg4...]
 # This command can accept any number of arguments and passes them all
 tool_dual() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "dual")
     
-    # Count and display all arguments
-    local arg_count=$#
-   
-     execute_file "log" "../._/._/._/._/dual.sh" "$@"
+    # Execute with automatic working directory handling
+    execute_file "log" "../._/._/._/._/dual.sh" "$working_dir" "$@"
     
     return 0
 }
 
 tool_info() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "info")
     
-    # Count and display all arguments
-    local arg_count=$#
-   
-     execute_file "log" "../._/._/._/._/jsinfo.sh" "$@"
+    # Execute with automatic working directory handling
+    execute_file "log" "../._/._/._/._/jsinfo.sh" "$working_dir" "$@"
     
     return 0
 }
@@ -1011,15 +1080,8 @@ tool_info() {
 # Function: Handle compile tool command
 # Usage: bash Raw.sh --compile <source_file> <output_file>
 # tool_compile() {
-#     local source_file="$1"
-#     local output_file="$2"
-#     
-#     if [ -z "$source_file" ] || [ -z "$output_file" ]; then
-#         echo -e "${RED}Error: compile command requires source and output files${NC}" >&2
-#         return 1
-#     fi
-#     
-#     execute_file "silent" "compiler/compile.sh" "$source_file" "$output_file"
+#     local working_dir=$(get_tool_working_dir "compile")
+#     execute_file "silent" "compiler/compile.sh" "$working_dir" "$@"
 # }
 #
 # Example of adding a command with variable arguments:
@@ -1027,22 +1089,12 @@ tool_info() {
 # Function: Handle process tool command
 # Usage: bash Raw.sh --process <file> [options...]
 # tool_process() {
-#     local file="$1"
-#     shift
-#     local options="$@"
-#     
-#     if [ -z "$file" ]; then
-#         echo -e "${RED}Error: process command requires a file${NC}" >&2
-#         return 1
-#     fi
-#     
-#     execute_file "log" "processor/main.sh" "$file" $options
+#     local working_dir=$(get_tool_working_dir "process")
+#     execute_file "log" "processor/main.sh" "$working_dir" "$@"
 # }
 #
-# IMPORTANT: When adding new tools, they will AUTOMATICALLY work with:
-#   - Short syntax: bash Raw.sh --<toolname> [args...]
-#   - Long syntax:  bash Raw.sh --tool <toolname> [args...]
-#   - Listing:      bash Raw.sh --tools
+# IMPORTANT: When adding new tools, add them to get_tool_working_dir() function above
+# to configure their working directory type (caller/file/global)
 # ============================================
 
 # Function: Route tool commands to appropriate handler
@@ -1101,7 +1153,12 @@ handle_tool_command() {
 # Pattern 8: Use JS file path as argument to an executable
 # execute_file "normal" "processor" "$JS_FILE_PATH" "$JS_ARGS"
 
-# Pattern 9: Conditional execution based on JS file processing
+# Pattern 9: Execute with specific working directory type
+# execute_file "normal" "processor.sh" "caller" "$@"
+# execute_file "normal" "processor.sh" "file" "$@"
+# execute_file "normal" "processor.sh" "global" "$@"
+
+# Pattern 10: Conditional execution based on JS file processing
 # if process_js_file "config.js" "some-arg"; then
 #     execute_sequence "normal" "success.sh"
 # else
