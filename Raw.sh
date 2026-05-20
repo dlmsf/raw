@@ -150,6 +150,9 @@ get_tool_working_dir() {
         "dual")     echo "file" ;;
         "info")     echo "caller" ;;
         "min")     echo "caller" ;;
+        "polish")     echo "caller" ;;
+        "arch")     echo "caller" ;;
+        "chain")     echo "caller" ;;
         
         # =====================================================================
         # ADD YOUR TOOLS HERE with their working directory
@@ -1079,6 +1082,36 @@ tool_min() {
     
     # Execute with automatic working directory handling
     execute_file "log" "./._/min/min" "$working_dir" "$@"
+    
+    return 0
+}
+
+tool_polish() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "polish")
+    
+    # Execute with automatic working directory handling
+    execute_file "log" "./._/min/polish.sh" "$working_dir" "$@"
+    
+    return 0
+}
+
+tool_arch() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "arch")
+    
+    # Execute with automatic working directory handling
+    execute_file "log" "./arch" "$working_dir" "$@"
+    
+    return 0
+}
+
+tool_chain() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "chain")
+    
+    # Execute with automatic working directory handling
+    execute_file "log" "./._/._/._/chaincheck.sh" "$working_dir" "$@"
     
     return 0
 }
