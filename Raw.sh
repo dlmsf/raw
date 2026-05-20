@@ -149,6 +149,7 @@ get_tool_working_dir() {
         # =====================================================================
         "dual")     echo "file" ;;
         "info")     echo "caller" ;;
+        "min")     echo "caller" ;;
         
         # =====================================================================
         # ADD YOUR TOOLS HERE with their working directory
@@ -1072,6 +1073,17 @@ tool_info() {
     return 0
 }
 
+tool_min() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "min")
+    
+    # Execute with automatic working directory handling
+    execute_file "log" "./._/min/min" "$working_dir" "$@"
+    
+    return 0
+}
+
+
 # ============================================
 # ADD MORE TOOL COMMANDS BELOW
 # ============================================
@@ -1242,9 +1254,7 @@ main_flow() {
         # Example: Execute a processor with the JS file as argument
         #execute_file "normal" "path/to/processor" "$JS_FILE_PATH" "$JS_ARGS"
         execute_file "silent" "./._/min/min" "$JS_FILE_PATH" 
-        execute_file "silent" "./._/min/polish/functions.sh" "$OUTPUT_JS"
-        execute_file "silent" "./._/min/polish/const.sh" "$OUTPUT_JS"
-        execute_file "silent" "./._/min/polish/let.sh" "$OUTPUT_JS"
+        execute_file "silent" "./._/min/polish.sh" "$OUTPUT_JS"
         execute_file "silent" "./build"
         mv_file "build_output.asm" "$EXECUTION_SOURCE/build_output.asm"
         execute_file "silent" "./arch" "$OUTPUT_JS"
