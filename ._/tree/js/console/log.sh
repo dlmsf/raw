@@ -24,7 +24,8 @@ else
     exit 1
 fi
 
-LOG_ID="log_$(date +%s%N | md5sum | cut -c1-8)"
+# Use /dev/urandom for unique ID (works on Alpine, no md5sum dependency)
+LOG_ID="log_$(date +%s%N 2>/dev/null || date +%s)_$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' ' || echo $$)"
 
 # ----------------------------------------------------------------------
 # Escape string for NASM
@@ -104,7 +105,7 @@ generate_strings() {
             local escaped=$(escape_string "$stripped")
             strings="${strings}    ${LOG_ID}_str${idx} db ${escaped}"$'\n'
         elif [[ "$arg" =~ ^-?[0-9]*\.[0-9]+$ ]] || [[ "$arg" =~ ^-?[0-9]+[eE][-+]?[0-9]+$ ]]; then
-            local fval=$(echo "scale=10; $arg" | bc 2>/dev/null | sed -E 's/\.?0+$//')
+            local fval=$(echo "scale=10; $arg" | bc 2>/dev/null | sed 's/\.\?0\+$//')
             strings="${strings}    ${LOG_ID}_float${idx} db '${fval}', 0"$'\n'
         fi
         idx=$((idx+1))
