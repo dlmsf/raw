@@ -132,6 +132,58 @@ VERBOSE_DEV="${VERBOSE_DEV:-false}"  # Default: completely silent
 EXECUTION_SOURCE="${EXECUTION_SOURCE:-dev}"  # Default: use compiled binaries from ./dev
 
 # ============================================
+# TOOL GROUPS CONFIGURATION
+# ============================================
+# Define tool groups, their colors, and tool order
+# Groups are displayed in the order defined here
+# Tools not assigned to any group go to "General" group
+# 
+# COLOR OPTIONS (use ANSI color codes without \033[ or \e[):
+#   Black: 0;30, Dark Gray: 1;30
+#   Red: 0;31, Light Red: 1;31
+#   Green: 0;32, Light Green: 1;32
+#   Brown/Orange: 0;33, Yellow: 1;33
+#   Blue: 0;34, Light Blue: 1;34
+#   Purple: 0;35, Light Purple: 1;35
+#   Cyan: 0;36, Light Cyan: 1;36
+#   Light Gray: 0;37, White: 1;37
+#
+# TO ADD A NEW GROUP:
+#   1. Add a new array TOOL_GROUP_<groupname>_TOOLS with tools in desired order
+#   2. Add the group name to TOOL_GROUPS_ORDER array
+#   3. Define TOOL_GROUP_<groupname>_COLOR with the color code
+#
+# TO ADD A TOOL TO EXISTING GROUP:
+#   1. Add tool name to the group's TOOL_GROUP_<groupname>_TOOLS array
+#   2. Add tool function (tool_<toolname>) in TOOL COMMAND HANDLERS section
+#   3. Add working directory config in get_tool_working_dir() function
+#
+# TO CHANGE ORDER OF GROUPS:
+#   - Modify TOOL_GROUPS_ORDER array
+#
+# TO CHANGE ORDER OF TOOLS IN A GROUP:
+#   - Modify the group's TOOL_GROUP_<groupname>_TOOLS array
+# ============================================
+
+# Define the order of groups (first group appears first)
+TOOL_GROUPS_ORDER=(
+    "Main"
+)
+
+# Define tools for "Main" group (in desired order)
+TOOL_GROUP_Main_TOOLS=(
+    "min"
+    "polish"
+    "arch"
+)
+
+# Define color for "Main" group
+TOOL_GROUP_Main_COLOR="1;36"  # Light Cyan
+
+# Define color for default "General" group
+TOOL_GROUP_General_COLOR="1;33"  # Yellow
+
+# ============================================
 # TOOL WORKING DIRECTORY CONFIGURATION
 # ============================================
 # WORKING DIRECTORY TYPES:
@@ -942,96 +994,261 @@ handle_test() {
 }
 
 # ============================================
-# TOOL COMMANDS SYSTEM
+# TOOL GROUPS SYSTEM
 # ============================================
 
-# Function: Display all available tool commands
-show_tool_commands() {
-    echo -e "${BLUE}Available tools:${NC}"
-    echo ""
+# Function: Check if a tool belongs to a specific group
+is_tool_in_group() {
+    local tool_name="$1"
+    local group_name="$2"
     
-    # Dynamically discover all tool_* functions (excluding non-tool functions)
-    local tool_functions=$(declare -F | grep -o 'tool_[a-zA-Z0-9_]*' | grep -v 'tool_mode\|tool_command\|tool_args\|tool_commands' | sed 's/^tool_//' | sort)
+    # Get the array of tools for this group
+    local group_array_name="TOOL_GROUP_${group_name}_TOOLS[@]"
     
-    if [ -z "$tool_functions" ]; then
-        echo "  No tools available"
+    # Check if the tool is in this group's array
+    for group_tool in "${!group_array_name}"; do
+        if [ "$group_tool" = "$tool_name" ]; then
+            return 0  # Found
+        fi
+    done
+    
+    return 1  # Not found
+}
+
+# Function: Get the group name for a specific tool
+get_tool_group() {
+    local tool_name="$1"
+    
+    # Check all defined groups first
+    for group_name in "${TOOL_GROUPS_ORDER[@]}"; do
+        if is_tool_in_group "$tool_name" "$group_name"; then
+            echo "$group_name"
+            return 0
+        fi
+    done
+    
+    # If not in any defined group, return "General"
+    echo "General"
+    return 0
+}
+
+# Function: Get color code for a group
+get_group_color() {
+    local group_name="$1"
+    local color_variable="TOOL_GROUP_${group_name}_COLOR"
+    local color="${!color_variable}"
+    
+    if [ -z "$color" ]; then
+        # Default to white if no color defined
+        echo "0;37"
+    else
+        echo "$color"
+    fi
+}
+
+# Function: Get tool description by running the tool function
+get_tool_description() {
+    local tool_name="$1"
+    
+    # Check if tool function exists
+    if ! declare -f "tool_${tool_name}" > /dev/null 2>&1; then
+        echo "<no description>"
         return 0
     fi
     
-    # Create a temp directory for parallel outputs
-    local tmp_dir=$(mktemp -d)
-    local pids=()
+    # Execute the tool function without arguments and capture first line of output
+    local description=""
+    description=$( (tool_${tool_name} 2>&1 || true) | sed 's/\x1b\[[0-9;]*m//g' | head -n 1 | tr '\n' ' ' | sed 's/  */ /g' | xargs)
+    
+    # If no description, use a placeholder
+    if [ -z "$description" ]; then
+        description="<no description>"
+    fi
+    
+    echo "$description"
+}
+
+# Function: Build a map of all tools and their groups
+build_tool_group_map() {
+    # Declare associative array for tool to group mapping
+    declare -gA TOOL_GROUP_MAP
+    
+    # Get all available tool functions
+    local all_tools=$(declare -F | grep -o 'tool_[a-zA-Z0-9_]*' | grep -v 'tool_mode\|tool_command\|tool_args\|tool_commands\|tool_group' | sed 's/^tool_//' | sort)
+    
+    # Assign each tool to its group
+    while IFS= read -r tool_name; do
+        if [ -n "$tool_name" ]; then
+            local group=$(get_tool_group "$tool_name")
+            TOOL_GROUP_MAP["$tool_name"]="$group"
+        fi
+    done <<< "$all_tools"
+}
+
+# Function: Get all tools for a specific group (sorted by group's defined order)
+get_tools_for_group() {
+    local group_name="$1"
+    local group_array_name="TOOL_GROUP_${group_name}_TOOLS[@]"
+    local group_tools=()
+    
+    # If this is a defined group with specific order
+    if [ "$group_name" != "General" ] && [ ${#TOOL_GROUPS_ORDER[@]} -gt 0 ]; then
+        # Use the defined order from the group array
+        for tool_name in "${!group_array_name}"; do
+            # Check if tool function actually exists
+            if declare -f "tool_${tool_name}" > /dev/null 2>&1; then
+                group_tools+=("$tool_name")
+            fi
+        done
+    else
+        # For General group, collect all tools not in any other group
+        local all_tools=$(declare -F | grep -o 'tool_[a-zA-Z0-9_]*' | grep -v 'tool_mode\|tool_command\|tool_args\|tool_commands\|tool_group' | sed 's/^tool_//' | sort)
+        
+        while IFS= read -r tool_name; do
+            if [ -n "$tool_name" ]; then
+                local assigned_group=$(get_tool_group "$tool_name")
+                if [ "$assigned_group" = "General" ]; then
+                    # Only include if tool function exists
+                    if declare -f "tool_${tool_name}" > /dev/null 2>&1; then
+                        group_tools+=("$tool_name")
+                    fi
+                fi
+            fi
+        done <<< "$all_tools"
+    fi
+    
+    # Return the array as newline-separated string
+    printf '%s\n' "${group_tools[@]}"
+}
+
+# Function: Display formatted tool list with groups and colors
+display_tool_list_with_groups() {
+    # Build the tool-group map
+    build_tool_group_map
     
     # Find the longest tool name for alignment
     local max_tool_length=0
+    local all_tools=$(declare -F | grep -o 'tool_[a-zA-Z0-9_]*' | grep -v 'tool_mode\|tool_command\|tool_args\|tool_commands\|tool_group' | sed 's/^tool_//' | sort)
+    
     while IFS= read -r tool_name; do
-        if [ ${#tool_name} -gt $max_tool_length ]; then
+        if [ -n "$tool_name" ] && [ ${#tool_name} -gt $max_tool_length ]; then
             max_tool_length=${#tool_name}
         fi
-    done <<< "$tool_functions"
+    done <<< "$all_tools"
     
-    # Run each tool without args in parallel to get descriptions
+    # Create temp directory for parallel description fetching
+    local temp_directory=$(mktemp -d)
+    local process_ids=()
+    
+    # Fetch all tool descriptions in parallel
     while IFS= read -r tool_name; do
-        (
-            # Run the tool function without arguments and capture first line of output
-            local description=""
-            if declare -f "tool_${tool_name}" > /dev/null; then
-                # Execute in subshell, strip colors, get first line
-                description=$( (tool_${tool_name} 2>&1 || true) | sed 's/\x1b\[[0-9;]*m//g' | head -n 1 | tr '\n' ' ' | sed 's/  */ /g' | xargs)
-            fi
-            
-            # If no description, use a placeholder
-            if [ -z "$description" ]; then
-                description="<no description>"
-            fi
-            
-            # Calculate max description width based on terminal
-            local term_width=${COLUMNS:-80}
-            local separator=" | "
-            local desc_max=$((term_width - max_tool_length - ${#separator}))
-            
-            # Truncate if longer than available space
-            if [ ${#description} -gt $desc_max ]; then
-                description="${description:0:$((desc_max - 3))}..."
-            fi
-            
-            # Get working directory type for this tool
-            local working_dir=$(get_tool_working_dir "$tool_name")
-            
-            # Output to temp file
-            echo "${description}" > "$tmp_dir/${tool_name}.desc"
-        ) &
-        pids+=($!)
-    done <<< "$tool_functions"
+        if [ -n "$tool_name" ]; then
+            (
+                local description=$(get_tool_description "$tool_name")
+                echo "$description" > "$temp_directory/${tool_name}.description"
+            ) &
+            process_ids+=($!)
+        fi
+    done <<< "$all_tools"
     
-    # Wait for all background processes
-    for pid in "${pids[@]}"; do
-        wait $pid 2>/dev/null
+    # Wait for all background processes to complete
+    for process_id in "${process_ids[@]}"; do
+        wait $process_id 2>/dev/null
     done
     
-    # Display results with dynamic alignment
-    while IFS= read -r tool_name; do
-        local description="<no description>"
-        if [ -f "$tmp_dir/${tool_name}.desc" ]; then
-            description=$(cat "$tmp_dir/${tool_name}.desc")
-        fi
+    # Display header
+    echo -e "\033[0;34mAvailable tools:\033[0m"
+    echo ""
+    
+    # Calculate max description width based on terminal
+    local terminal_width=${COLUMNS:-80}
+    local separator=" | "
+    local description_maximum=$((terminal_width - max_tool_length - ${#separator}))
+    
+    # Display tools group by group
+    local has_general_tools=false
+    
+    # Process defined groups first (in order)
+    for group_name in "${TOOL_GROUPS_ORDER[@]}"; do
+        local group_tools_list=$(get_tools_for_group "$group_name")
         
-        # Get working directory type for display
-        local working_dir=$(get_tool_working_dir "$tool_name")
-        printf "  --%-${max_tool_length}s | %s [dir: %s]\n" "${tool_name}" "${description}" "${working_dir}"
-    done <<< "$tool_functions"
+        if [ -n "$group_tools_list" ]; then
+            local group_color=$(get_group_color "$group_name")
+            
+            # Display group header with its color
+            echo -e "\033[${group_color}m▸ ${group_name}:\033[0m"
+            
+            # Display tools in this group
+            while IFS= read -r tool_name; do
+                if [ -n "$tool_name" ]; then
+                    local description="<no description>"
+                    if [ -f "$temp_directory/${tool_name}.description" ]; then
+                        description=$(cat "$temp_directory/${tool_name}.description")
+                    fi
+                    
+                    # Truncate description if too long
+                    if [ ${#description} -gt $description_maximum ]; then
+                        description="${description:0:$((description_maximum - 3))}..."
+                    fi
+                    
+                    # Get working directory for this tool
+                    local working_directory=$(get_tool_working_dir "$tool_name")
+                    
+                    # Display tool with group color
+                    printf "  \033[${group_color}m--%-${max_tool_length}s\033[0m ${separator}%s \033[0;90m[dir: %s]\033[0m\n" \
+                        "$tool_name" "$description" "$working_directory"
+                fi
+            done <<< "$group_tools_list"
+            
+            echo ""
+        fi
+    done
     
-    # Cleanup
-    rm -rf "$tmp_dir"
+    # Check if there are any tools in General group
+    local general_tools_list=$(get_tools_for_group "General")
+    if [ -n "$general_tools_list" ]; then
+        has_general_tools=true
+        local general_color=$(get_group_color "General")
+        
+        # Display General group header
+        echo -e "\033[${general_color}m▸ General:\033[0m"
+        
+        # Display tools in General group
+        while IFS= read -r tool_name; do
+            if [ -n "$tool_name" ]; then
+                local description="<no description>"
+                if [ -f "$temp_directory/${tool_name}.description" ]; then
+                    description=$(cat "$temp_directory/${tool_name}.description")
+                fi
+                
+                # Truncate description if too long
+                if [ ${#description} -gt $description_maximum ]; then
+                    description="${description:0:$((description_maximum - 3))}..."
+                fi
+                
+                # Get working directory for this tool
+                local working_directory=$(get_tool_working_dir "$tool_name")
+                
+                # Display tool with general color
+                printf "  \033[${general_color}m--%-${max_tool_length}s\033[0m ${separator}%s \033[0;90m[dir: %s]\033[0m\n" \
+                    "$tool_name" "$description" "$working_directory"
+            fi
+        done <<< "$general_tools_list"
+        
+        echo ""
+    fi
     
+    # Cleanup temp directory
+    rm -rf "$temp_directory"
+    
+    # Display usage information
+    echo -e "\033[1;33mUsage: bash Raw.sh --<tool> [args...]\033[0m"
+    echo -e "\033[1;33m   or: bash Raw.sh --tool <tool> [args...]\033[0m"
     echo ""
-    echo -e "${YELLOW}Usage: bash Raw.sh --<tool> [args...]${NC}"
-    echo -e "${YELLOW}   or: bash Raw.sh --tool <tool> [args...]${NC}"
-    echo ""
-    echo -e "${BLUE}Working directory types:${NC}"
-    echo -e "  global  - Execute from Raw.sh directory ($SCRIPT_DIR)"
-    echo -e "  caller  - Execute from where you called the command ($CALLER_DIR)"
-    echo -e "  file    - Execute from the tool file's own directory"
+    echo -e "\033[0;34mWorking directory types:\033[0m"
+    echo -e "  \033[0;37mglobal\033[0m  - Execute from Raw.sh directory ($SCRIPT_DIR)"
+    echo -e "  \033[0;37mcaller\033[0m  - Execute from where you called the command ($CALLER_DIR)"
+    echo -e "  \033[0;37mfile\033[0m    - Execute from the tool file's own directory"
 }
 
 # ============================================
@@ -1116,7 +1333,6 @@ tool_chain() {
     return 0
 }
 
-
 # ============================================
 # ADD MORE TOOL COMMANDS BELOW
 # ============================================
@@ -1138,8 +1354,10 @@ tool_chain() {
 #     execute_file "log" "processor/main.sh" "$working_dir" "$@"
 # }
 #
-# IMPORTANT: When adding new tools, add them to get_tool_working_dir() function above
-# to configure their working directory type (caller/file/global)
+# IMPORTANT: When adding new tools:
+#   1. Add their working directory config in get_tool_working_dir() function above
+#   2. Add tool function handler (tool_<name>) here
+#   3. Optionally add to a group in TOOL GROUPS CONFIGURATION section
 # ============================================
 
 # Function: Route tool commands to appropriate handler
@@ -1150,7 +1368,7 @@ handle_tool_command() {
     
     # If no command provided, show all available commands
     if [ -z "$command" ]; then
-        show_tool_commands
+        display_tool_list_with_groups
         return 0
     fi
     
@@ -1158,7 +1376,7 @@ handle_tool_command() {
     if ! declare -f "tool_${command}" > /dev/null 2>&1; then
         echo -e "${RED}Error: Unknown tool command '$command'${NC}" >&2
         echo ""
-        show_tool_commands
+        display_tool_list_with_groups
         return 1
     fi
     
@@ -1223,7 +1441,7 @@ main_flow() {
     
     # Step 2: Check for --tools special mode
     if [ "$SPECIAL_MODE" = "--tools" ]; then
-        show_tool_commands
+        display_tool_list_with_groups
         exit 0
     fi
     
