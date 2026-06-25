@@ -175,6 +175,8 @@ TOOL_GROUP_Main_TOOLS=(
     "min"
     "polish"
     "arch"
+    "build"
+    "bin"
 )
 
 # Define color for "Main" group
@@ -205,6 +207,8 @@ get_tool_working_dir() {
         "polish")     echo "caller" ;;
         "arch")     echo "caller" ;;
         "chain")     echo "caller" ;;
+        "build")     echo "caller" ;;
+        "bin")     echo "caller" ;;
         
         # =====================================================================
         # ADD YOUR TOOLS HERE with their working directory
@@ -1331,6 +1335,228 @@ tool_chain() {
     execute_file "log" "./._/._/._/chaincheck.sh" "$working_dir" "$@"
     
     return 0
+}
+
+# Function: Handle build tool command
+# Usage: bash Raw.sh --build <path/to/arch_output>
+# This command receives an arch_output file and runs the build pipeline:
+# 1. Execute ./build (generates build_output.asm in caller dir)
+# 2. Move build_output.asm to dev directory for tree/build.sh
+# 3. Copy the input arch_output to the same dev directory level
+# 4. Execute ./tree/build.sh
+# 5. Move the final build_output.asm back to the caller directory (where arch_output is located)
+tool_build() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "build")
+    
+    # Check if arch_output argument was provided
+    if [ $# -eq 0 ]; then
+        echo -e "\033[0;31mError: arch_output file path required\033[0m" >&2
+        echo -e "\033[1;33mUsage: bash Raw.sh --build <path/to/arch_output>\033[0m" >&2
+        return 1
+    fi
+    
+    local arch_output_argument="$1"
+    
+    # Resolve arch_output path relative to caller's directory
+    local arch_output_path=""
+    if [[ "$arch_output_argument" = /* ]]; then
+        # Absolute path
+        arch_output_path="$arch_output_argument"
+    else
+        # Relative path - resolve from caller's directory
+        arch_output_path="$CALLER_DIR/$arch_output_argument"
+    fi
+    
+    # Check if arch_output file exists
+    if [ ! -f "$arch_output_path" ]; then
+        echo -e "\033[0;31mError: arch_output file not found: $arch_output_path\033[0m" >&2
+        return 1
+    fi
+    
+    # Get the directory containing the arch_output file
+    local arch_output_directory=$(dirname "$arch_output_path")
+    
+    echo -e "\033[0;34mBuild process started...\033[0m"
+    echo -e "\033[0;37mInput arch_output: $arch_output_path\033[0m"
+    echo -e "\033[0;37mOutput directory: $arch_output_directory\033[0m"
+    echo ""
+    
+    # Step 1: Execute ./build (generates build_output.asm in caller directory)
+    echo -e "\033[1;33mStep 1/4: Generating build_output.asm...\033[0m"
+    execute_file "silent" "./build" "$working_dir"
+    if [ $? -ne 0 ]; then
+        echo -e "\033[0;31mError: ./build execution failed\033[0m" >&2
+        return 1
+    fi
+    echo -e "\033[0;32m✓ build_output.asm generated in caller directory\033[0m"
+    
+    # build_output.asm should now be in CALLER_DIR since ./build ran with "caller" working dir
+    local generated_build_asm="$CALLER_DIR/build_output.asm"
+    
+    # Check if the file was actually generated
+    if [ ! -f "$generated_build_asm" ]; then
+        echo -e "\033[0;31mError: build_output.asm was not generated in $CALLER_DIR\033[0m" >&2
+        return 1
+    fi
+    
+    # Step 2: Move build_output.asm to the correct dev directory (same level as tree/build.sh expects)
+    echo -e "\033[1;33mStep 2/4: Moving build_output.asm to build directory...\033[0m"
+    local dev_build_asm="$SCRIPT_DIR/$EXECUTION_SOURCE/build_output.asm"
+    mv_file "$generated_build_asm" "$dev_build_asm"
+    if [ $? -ne 0 ]; then
+        echo -e "\033[0;31mError: Failed to move build_output.asm to $dev_build_asm\033[0m" >&2
+        return 1
+    fi
+    echo -e "\033[0;32m✓ build_output.asm moved to $dev_build_asm\033[0m"
+    
+    # Step 3: Copy the received arch_output to the same directory level as build_output.asm
+    echo -e "\033[1;33mStep 3/4: Copying arch_output to build directory...\033[0m"
+    local dev_arch_output="$SCRIPT_DIR/$EXECUTION_SOURCE/arch_output"
+    cp_file "$arch_output_path" "$dev_arch_output"
+    if [ $? -ne 0 ]; then
+        echo -e "\033[0;31mError: Failed to copy arch_output to $dev_arch_output\033[0m" >&2
+        return 1
+    fi
+    echo -e "\033[0;32m✓ arch_output copied to $dev_arch_output\033[0m"
+    
+    # Step 4: Execute ./tree/build.sh (uses both build_output.asm and arch_output from the dev directory)
+    echo -e "\033[1;33mStep 4/4: Running tree/build.sh...\033[0m"
+    execute_file "log" "./tree/build.sh" "$working_dir"
+    if [ $? -ne 0 ]; then
+        echo -e "\033[0;31mError: tree/build.sh execution failed\033[0m" >&2
+        return 1
+    fi
+    echo -e "\033[0;32m✓ tree/build.sh completed\033[0m"
+    
+    # Step 5: Move the final build_output.asm back to the caller's arch_output directory
+    echo -e "\033[1;33mMoving final build_output.asm to: $arch_output_directory/\033[0m"
+    local final_asm="$arch_output_directory/build_output.asm"
+    mv_file "$dev_build_asm" "$final_asm"
+    if [ $? -ne 0 ]; then
+        echo -e "\033[0;31mError: Failed to move final build_output.asm to $final_asm\033[0m" >&2
+        return 1
+    fi
+    echo -e "\033[0;32m✓ Final build_output.asm saved to: $final_asm\033[0m"
+    
+    # Clean up: remove the copied arch_output from dev directory
+    rm_file "$dev_arch_output"
+    
+    echo ""
+    echo -e "\033[0;32mBuild process completed successfully!\033[0m"
+    
+    return 0
+}
+
+# Function: Handle bin tool command
+# Usage: bash Raw.sh --bin [options] <build_output.asm>
+# Options:
+#   -o <output_name>    Specify the output binary name (optional)
+# Examples:
+#   bash Raw.sh --bin build_output.asm
+#   bash Raw.sh --bin -o test build_output.asm
+#   bash Raw.sh --bin -o myprogram build_output.asm
+tool_bin() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "bin")
+    
+    # Check if arguments were provided
+    if [ $# -eq 0 ]; then
+        echo -e "\033[0;31mError: build_output.asm file path required\033[0m" >&2
+        echo -e "\033[1;33mUsage: bash Raw.sh --bin [-o <output_name>] <build_output.asm>\033[0m" >&2
+        echo -e "\033[1;33mExamples:\033[0m" >&2
+        echo -e "\033[1;33m  bash Raw.sh --bin build_output.asm\033[0m" >&2
+        echo -e "\033[1;33m  bash Raw.sh --bin -o test build_output.asm\033[0m" >&2
+        return 1
+    fi
+    
+    # Parse arguments: look for -o flag
+    local output_name=""
+    local asm_file=""
+    
+    while [ $# -gt 0 ]; do
+        if [ "$1" = "-o" ]; then
+            # Next argument is the output name
+            if [ $# -lt 2 ]; then
+                echo -e "\033[0;31mError: -o requires an output name\033[0m" >&2
+                return 1
+            fi
+            output_name="$2"
+            shift 2
+        elif [[ "$1" != -* ]]; then
+            # This is the asm file
+            asm_file="$1"
+            shift
+        else
+            echo -e "\033[0;31mError: Unknown option: $1\033[0m" >&2
+            return 1
+        fi
+    done
+    
+    # Check if asm file was provided
+    if [ -z "$asm_file" ]; then
+        echo -e "\033[0;31mError: build_output.asm file path required\033[0m" >&2
+        return 1
+    fi
+    
+    # Resolve asm file path relative to caller's directory
+    local asm_file_path=""
+    if [[ "$asm_file" = /* ]]; then
+        # Absolute path
+        asm_file_path="$asm_file"
+    else
+        # Relative path - resolve from caller's directory
+        asm_file_path="$CALLER_DIR/$asm_file"
+    fi
+    
+    # Check if asm file exists
+    if [ ! -f "$asm_file_path" ]; then
+        echo -e "\033[0;31mError: build_output.asm file not found: $asm_file_path\033[0m" >&2
+        return 1
+    fi
+    
+    echo -e "\033[0;34mBinary generation started...\033[0m"
+    echo -e "\033[0;37mInput ASM: $asm_file_path\033[0m"
+    
+    # Path to the basm script
+    local basm_script="$SCRIPT_DIR/dev/basm/basm.sh"
+    
+    # Check if basm script exists
+    if [ ! -f "$basm_script" ]; then
+        echo -e "\033[0;31mError: basm script not found at $basm_script\033[0m" >&2
+        return 1
+    fi
+    
+    # Make sure basm script is executable
+    chmod +x "$basm_script" 2>/dev/null
+    
+    # Build the basm command
+    local basm_args="--bin"
+    if [ -n "$output_name" ]; then
+        basm_args="$basm_args -o $output_name"
+    fi
+    basm_args="$basm_args $asm_file_path"
+    
+    echo -e "\033[0;37mExecuting: basm.sh $basm_args\033[0m"
+    echo ""
+    
+    # Execute basm with --bin flag from the caller's directory
+    (cd "$CALLER_DIR" && "$basm_script" $basm_args)
+    local result=$?
+    
+    if [ $result -eq 0 ]; then
+        echo ""
+        echo -e "\033[0;32mBinary generated successfully!\033[0m"
+        if [ -n "$output_name" ]; then
+            echo -e "\033[0;32mOutput: $CALLER_DIR/$output_name\033[0m"
+        else
+            echo -e "\033[0;32mOutput: $CALLER_DIR/build_output\033[0m"
+        fi
+    else
+        echo -e "\033[0;31mBinary generation failed with exit code: $result\033[0m" >&2
+    fi
+    
+    return $result
 }
 
 # ============================================
