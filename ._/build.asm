@@ -1,3 +1,5 @@
+; build.asm – corrected template generator
+
 section .data
     filename db "./build_output.asm", 0
     template db "section .data", 10
@@ -197,7 +199,7 @@ section .data
              db "    mov r9, 100000000000000          ; Divisor", 10
              db ".frac_loop:", 10
              db "    cmp r8, 0", 10
-             db "    je .done", 10
+             db "    je .done_with_fraction", 10
              db "    ", 10
              db "    xor rdx, rdx", 10
              db "    div r9                  ; rax = quotient, rdx = remainder", 10
@@ -218,9 +220,11 @@ section .data
              db "    dec r8", 10
              db "    jmp .frac_loop", 10
              db ".no_fraction:", 10
-             db "    jmp .done", 10
-             db ".done:", 10
-             db "    ; Remove trailing zeros after decimal point", 10
+             db "    ; No fractional part -> just terminate and exit", 10
+             db "    mov byte [rdi], 0", 10
+             db "    jmp .exit_float_to_str", 10
+             db ".done_with_fraction:", 10
+             db "    ; Remove trailing zeros after decimal point (only when fraction exists)", 10
              db "    dec rdi", 10
              db ".remove_zeros:", 10
              db "    cmp byte [rdi], '0'", 10
@@ -234,6 +238,7 @@ section .data
              db ".terminate:", 10
              db "    inc rdi", 10
              db "    mov byte [rdi], 0", 10
+             db ".exit_float_to_str:", 10
              db "    ", 10
              db "    pop r10", 10
              db "    pop r9", 10
