@@ -38,42 +38,31 @@ is_arithmetic_expression() {
     # Trim whitespace
     value=$(echo "$value" | sed 's/[[:space:]]//g')
     
-    # Must contain only numbers and arithmetic operators + - * / %
-    if [[ "$value" =~ ^[-]?[0-9]+([-+*/%][0-9]+)*$ ]]; then
-        return 0
-    fi
-    
-    # Check for hexadecimal arithmetic
-    if [[ "$value" =~ ^[-]?0[xX][0-9a-fA-F]+([-+*/%]0[xX][0-9a-fA-F]+)*$ ]]; then
-        return 0
-    fi
-    
-    # Check for octal arithmetic
-    if [[ "$value" =~ ^[-]?0[0-7]+([-+*/%]0[0-7]+)*$ ]]; then
-        return 0
-    fi
-    
-    # Check for binary arithmetic
-    if [[ "$value" =~ ^[-]?0[bB][01]+([-+*/%]0[bB][01]+)*$ ]]; then
-        return 0
-    fi
-    
-    # Mixed numeric types arithmetic
-    if [[ "$value" =~ ^[-]?[0-9bx0-9a-fA-F]+([-+*/%][0-9bx0-9a-fA-F]+)*$ ]]; then
-        # Additional validation - all tokens must be valid numbers
-        # Split by operators and validate each part
-        local clean_expr=$(echo "$value" | sed 's/[-+*/%]/ /g')
-        read -ra PARTS <<< "$clean_expr"
-        
-        for part in "${PARTS[@]}"; do
-            # Check each part is a valid number
-            if [[ ! "$part" =~ ^-?[0-9]+$ ]] && \
-               [[ ! "$part" =~ ^-?0[xX][0-9a-fA-F]+$ ]] && \
-               [[ ! "$part" =~ ^-?0[0-7]+$ ]] && \
-               [[ ! "$part" =~ ^-?0[bB][01]+$ ]]; then
+    # Check for parenthesized expressions recursively
+    if [[ "$value" =~ \( ]]; then
+        # Extract and validate parenthesized groups
+        local check_value="$value"
+        while [[ "$check_value" =~ \(([^()]+)\) ]]; do
+            local inner="${BASH_REMATCH[1]}"
+            if ! is_arithmetic_expression "$inner"; then
                 return 1
             fi
+            # Replace the validated parenthesized expression with a placeholder number
+            check_value="${check_value//(${inner})/1}"
         done
+        # Now check if the remaining expression with placeholders is valid
+        if ! is_arithmetic_expression "$check_value"; then
+            return 1
+        fi
+        return 0
+    fi
+    
+    # Pattern for decimal numbers, integers, hex, octal, binary
+    # Allows for: 123, 12.34, .5, 5., 0x1A, 0o77, 0b11, 1e10, 1.5e-3
+    local number_pattern='-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?|-?0[xX][0-9a-fA-F]+|-?0[oO][0-7]+|-?0[bB][01]+'
+    
+    # Check if the entire expression matches: number (operator number)*
+    if [[ "$value" =~ ^${number_pattern}([-+*/%]${number_pattern})*$ ]]; then
         return 0
     fi
     
@@ -83,14 +72,43 @@ is_arithmetic_expression() {
 # Function to check if string is a simple number
 is_simple_number() {
     local str="$1"
-    if [[ "$str" =~ ^-?[0-9]+$ ]] || \
-       [[ "$str" =~ ^-?0[xX][0-9a-fA-F]+$ ]] || \
-       [[ "$str" =~ ^-?0[0-7]+$ ]] || \
-       [[ "$str" =~ ^-?0[bB][01]+$ ]]; then
+    
+    # Decimal integer
+    if [[ "$str" =~ ^-?[0-9]+$ ]]; then
         return 0
-    else
-        return 1
     fi
+    
+    # Decimal with decimal point
+    if [[ "$str" =~ ^-?[0-9]+\.[0-9]*$ ]] || [[ "$str" =~ ^-?\.[0-9]+$ ]] || [[ "$str" =~ ^-?[0-9]*\.[0-9]+$ ]]; then
+        return 0
+    fi
+    
+    # Scientific notation
+    if [[ "$str" =~ ^-?[0-9]+(\.[0-9]*)?[eE][+-]?[0-9]+$ ]]; then
+        return 0
+    fi
+    
+    # Hexadecimal
+    if [[ "$str" =~ ^-?0[xX][0-9a-fA-F]+$ ]]; then
+        return 0
+    fi
+    
+    # Octal (with 0o or 0O prefix)
+    if [[ "$str" =~ ^-?0[oO][0-7]+$ ]]; then
+        return 0
+    fi
+    
+    # Binary
+    if [[ "$str" =~ ^-?0[bB][01]+$ ]]; then
+        return 0
+    fi
+    
+    # Legacy octal (leading 0, but not 0x, 0o, 0b)
+    if [[ "$str" =~ ^-?0[0-7]+$ ]] && [[ ! "$str" =~ ^-?0[xXoObB] ]]; then
+        return 0
+    fi
+    
+    return 1
 }
 
 # Function to check if content is a simple type
@@ -100,7 +118,7 @@ is_simple_type() {
     # Trim whitespace
     value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     
-    # Check for arithmetic expressions first
+    # Check for arithmetic expressions first (includes decimals and parentheses)
     if is_arithmetic_expression "$value"; then
         return 0
     fi
@@ -136,10 +154,15 @@ is_simple_type() {
         return 0
     fi
     
-    # Check for expressions with variables (e.g., a + b)
+    # Check for expressions with variables (e.g., a + b, a * 2.5)
     if [[ "$value" =~ [+\-*/%] ]]; then
         # Contains operators but no quotes, could be mixed variable/numbers
         # For now, treat as simple (will be handled by the simple.sh type detector)
+        return 0
+    fi
+    
+    # Check for parenthesized expressions with variables
+    if [[ "$value" =~ \( ]]; then
         return 0
     fi
     
@@ -158,18 +181,16 @@ is_array_type() {
         return 1
     fi
     
+    # Get content inside brackets
+    local content="${value:1:${#value}-2}"
+    
     # Check for arithmetic expressions in brackets (they're not arrays)
-    if [[ "$value" =~ ^\[[0-9]+\]$ ]] || [[ "$value" =~ ^\[[0-9bx0-9a-fA-F]+([-+*/%][0-9bx0-9a-fA-F]+)*\]$ ]]; then
-        # This is likely a single number or arithmetic in brackets, not an array
-        # Check if it contains only numbers and operators
-        local content="${value:1:${#value}-2}"
-        if is_arithmetic_expression "$content" || is_simple_number "$content"; then
-            # This is just a number/expression in brackets, treat as simple
-            return 1
-        fi
+    if is_arithmetic_expression "$content" || is_simple_number "$content"; then
+        # This is just a number/expression in brackets, treat as simple
+        return 1
     fi
     
-    # Get content inside brackets
+    # Get content inside brackets for array processing
     local array_content="${value:1:${#value}-2}"
     array_content=$(echo "$array_content" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     
@@ -183,13 +204,14 @@ is_array_type() {
     local current=""
     local bracket_depth=0
     local brace_depth=0
+    local parenthese_depth=0
     local in_string=false
     local string_char=""
     
-    for (( i=0; i<${#array_content}; i++ )); do
-        local char="${array_content:$i:1}"
+    for (( index=0; index<${#array_content}; index++ )); do
+        local char="${array_content:$index:1}"
         local prev_char=""
-        [ $i -gt 0 ] && prev_char="${array_content:$((i-1)):1}"
+        [ $index -gt 0 ] && prev_char="${array_content:$((index-1)):1}"
         
         if [ "$in_string" = false ]; then
             case "$char" in
@@ -197,13 +219,15 @@ is_array_type() {
                 "]") ((bracket_depth--)) ;;
                 "{") ((brace_depth++)) ;;
                 "}") ((brace_depth--)) ;;
+                "(") ((parenthese_depth++)) ;;
+                ")") ((parenthese_depth--)) ;;
                 '"' | "'" | "\`")
                     in_string=true
                     string_char="$char"
                     ;;
             esac
             
-            if [ "$char" = "," ] && [ $bracket_depth -eq 0 ] && [ $brace_depth -eq 0 ]; then
+            if [ "$char" = "," ] && [ $bracket_depth -eq 0 ] && [ $brace_depth -eq 0 ] && [ $parenthese_depth -eq 0 ]; then
                 elements+=("$current")
                 current=""
             else
@@ -260,13 +284,14 @@ is_object_type() {
     local current=""
     local bracket_depth=0
     local brace_depth=0
+    local parenthese_depth=0
     local in_string=false
     local string_char=""
     
-    for (( i=0; i<${#object_content}; i++ )); do
-        local char="${object_content:$i:1}"
+    for (( index=0; index<${#object_content}; index++ )); do
+        local char="${object_content:$index:1}"
         local prev_char=""
-        [ $i -gt 0 ] && prev_char="${object_content:$((i-1)):1}"
+        [ $index -gt 0 ] && prev_char="${object_content:$((index-1)):1}"
         
         if [ "$in_string" = false ]; then
             case "$char" in
@@ -274,13 +299,15 @@ is_object_type() {
                 "]") ((bracket_depth--)) ;;
                 "{") ((brace_depth++)) ;;
                 "}") ((brace_depth--)) ;;
+                "(") ((parenthese_depth++)) ;;
+                ")") ((parenthese_depth--)) ;;
                 '"' | "'" | "\`")
                     in_string=true
                     string_char="$char"
                     ;;
             esac
             
-            if [ "$char" = "," ] && [ $bracket_depth -eq 0 ] && [ $brace_depth -eq 0 ]; then
+            if [ "$char" = "," ] && [ $bracket_depth -eq 0 ] && [ $brace_depth -eq 0 ] && [ $parenthese_depth -eq 0 ]; then
                 properties+=("$current")
                 current=""
             else
@@ -335,10 +362,10 @@ is_complex_type() {
     local in_string=false
     local string_char=""
     
-    for (( i=0; i<${#value}; i++ )); do
-        local char="${value:$i:1}"
+    for (( index=0; index<${#value}; index++ )); do
+        local char="${value:$index:1}"
         local prev_char=""
-        [ $i -gt 0 ] && prev_char="${value:$((i-1)):1}"
+        [ $index -gt 0 ] && prev_char="${value:$((index-1)):1}"
         
         if [ "$in_string" = false ]; then
             case "$char" in

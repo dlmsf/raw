@@ -1,4 +1,4 @@
-; build.asm – corrected template generator
+; build.asm – corrected template generator with full float and nested expression support
 
 section .data
     filename db "./build_output.asm", 0
@@ -36,7 +36,8 @@ section .data
              db "    null_str db 'null', 0", 10
              db "    undefined_str db 'undefined', 0", 10
              db "    hex_prefix db '0x', 0", 10
-             db "    float_scale dq 1000000000000000.0", 10, 10
+             db "    float_scale dq 1000000000000000.0", 10
+             db "    float_ten dq 10.0", 10, 10
              
              db "    ; Common utility strings", 10
              db "    space db ' ', 0", 10
@@ -45,7 +46,8 @@ section .data
              db "section .bss", 10
              db "    print_buffer resb 32", 10
              db "    number_buffer resb 32", 10
-             db "    temp_number resq 1", 10, 10
+             db "    temp_number resq 1", 10
+             db "    temp_float resq 1", 10, 10
              
              db "section .text", 10
              db "    global _start", 10, 10

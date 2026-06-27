@@ -32,6 +32,41 @@ else
     exit 1
 fi
 
+# Function to check if a string is a valid arithmetic expression
+is_arithmetic_expression() {
+    local value="$1"
+    # Remove all whitespace
+    local clean_value=$(echo "$value" | sed 's/[[:space:]]//g')
+    
+    # Handle parenthesized expressions recursively
+    if [[ "$clean_value" =~ \( ]]; then
+        local check_value="$clean_value"
+        while [[ "$check_value" =~ \(([^()]+)\) ]]; do
+            local inner="${BASH_REMATCH[1]}"
+            if ! is_arithmetic_expression "$inner"; then
+                return 1
+            fi
+            # Replace the validated parenthesized expression with a placeholder
+            check_value="${check_value//(${inner})/1}"
+        done
+        # Check the remaining expression with placeholders
+        if ! is_arithmetic_expression "$check_value"; then
+            return 1
+        fi
+        return 0
+    fi
+    
+    # Pattern for numbers: decimal, float, scientific notation, hex, octal, binary
+    local number_pattern='-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?|-?0[xX][0-9a-fA-F]+|-?0[oO][0-7]+|-?0[bB][01]+'
+    
+    # Check if the expression is number (operator number)*
+    if [[ "$clean_value" =~ ^${number_pattern}([-+*/%]${number_pattern})*$ ]]; then
+        return 0
+    fi
+    
+    return 1
+}
+
 # Function to determine primitive type
 determine_type() {
     local value="$1"
@@ -55,50 +90,58 @@ determine_type() {
     fi
     
     # 3. If it contains any quotes, it's definitely a string
-    if [[ "$value" =~ [\"\'] ]]; then
+    if [[ "$value" =~ [\"\'\`] ]]; then
         echo "string"
         return
     fi
     
-    # 4. Check for arithmetic expressions (including + as operator)
-    # Remove all whitespace for pattern matching
-    local clean_val=$(echo "$value" | sed 's/[[:space:]]//g')
-    
-    # Pattern for a valid arithmetic expression:
-    # Optional leading minus, then number (integer/decimal/exponent),
-    # then zero or more (operator followed by number).
-    # Operators allowed: + - * / %
-    if [[ "$clean_val" =~ ^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?([-+*/%][0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?)*$ ]]; then
+    # 4. Check for arithmetic expressions (including decimals and parentheses)
+    if is_arithmetic_expression "$value"; then
         echo "number"
         return
     fi
     
-    # 5. Check for pure numbers (hex, octal, binary, decimal, float) without operators
-    # Hex: 0x... or 0X...
-    if [[ "$value" =~ ^-?0[xX][0-9a-fA-F]+$ ]]; then
-        echo "number"
-        return
-    fi
-    # Octal: 0...
-    if [[ "$value" =~ ^-?0[0-7]+$ ]]; then
-        echo "number"
-        return
-    fi
-    # Binary: 0b... or 0B...
-    if [[ "$value" =~ ^-?0[bB][01]+$ ]]; then
-        echo "number"
-        return
-    fi
+    # 5. Check for pure numbers (all formats) without operators
     # Decimal integer
     if [[ "$value" =~ ^-?[0-9]+$ ]]; then
         echo "number"
         return
     fi
-    # Float / scientific notation (without operators)
-    if [[ "$value" =~ ^-?[0-9]+\.[0-9]+$ ]] || 
-       [[ "$value" =~ ^-?[0-9]+\.[0-9]*[eE][-+]?[0-9]+$ ]] || 
-       [[ "$value" =~ ^-?[0-9]*\.[0-9]+$ ]] ||
-       [[ "$value" =~ ^-?[0-9]+[eE][-+]?[0-9]+$ ]]; then
+    
+    # Decimal with decimal point (various formats)
+    if [[ "$value" =~ ^-?[0-9]+\.[0-9]*$ ]] || \
+       [[ "$value" =~ ^-?\.[0-9]+$ ]] || \
+       [[ "$value" =~ ^-?[0-9]*\.[0-9]+$ ]]; then
+        echo "number"
+        return
+    fi
+    
+    # Scientific notation
+    if [[ "$value" =~ ^-?[0-9]+(\.[0-9]*)?[eE][+-]?[0-9]+$ ]]; then
+        echo "number"
+        return
+    fi
+    
+    # Hex: 0x... or 0X...
+    if [[ "$value" =~ ^-?0[xX][0-9a-fA-F]+$ ]]; then
+        echo "number"
+        return
+    fi
+    
+    # Octal: 0o... or 0O... (modern JavaScript octal)
+    if [[ "$value" =~ ^-?0[oO][0-7]+$ ]]; then
+        echo "number"
+        return
+    fi
+    
+    # Binary: 0b... or 0B...
+    if [[ "$value" =~ ^-?0[bB][01]+$ ]]; then
+        echo "number"
+        return
+    fi
+    
+    # Legacy octal: 0... (but not 0x, 0o, 0b)
+    if [[ "$value" =~ ^-?0[0-7]+$ ]] && [[ ! "$value" =~ ^-?0[xXoObB] ]]; then
         echo "number"
         return
     fi
@@ -109,11 +152,15 @@ determine_type() {
         return
     fi
     
-    # 7. Default to string (includes concatenation like "hello" + "world" which would have been caught
-    #    by quotes earlier, or expressions with mixed types that JavaScript would coerce to string)
+    # 7. Check for expressions with variables and numbers (like: a + 2.5, (x * y) / 2)
+    if [[ "$value" =~ [+\-*/%()] ]]; then
+        echo "number"
+        return
+    fi
+    
+    # 8. Default to string
     echo "string"
 }
-
 
 # Determine the type of the value
 TYPE=$(determine_type "$VAR_VALUE")

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # number.sh - Converts JavaScript number declarations to NASM assembly code
-# Generates runtime evaluation code for expressions including floats.
+# Generates runtime evaluation code for expressions including floats and nested parentheses
 # ALL type information is embedded as runtime _type tags
 
 set -x  # Debug: show commands being executed
@@ -36,7 +36,7 @@ fi
 echo "DEBUG: VAR_NAME='$VAR_NAME', VAR_VALUE='$VAR_VALUE'" >&2
 
 # ----------------------------------------------------------------------
-# Detect if expression contains any operators
+# Detect if expression contains any operators or parentheses
 # ----------------------------------------------------------------------
 has_operators() {
     local expr="$1"
@@ -48,7 +48,7 @@ has_operators() {
 }
 
 # ----------------------------------------------------------------------
-# Detect if expression needs float
+# Detect if expression needs float (contains decimal point, scientific notation, or division)
 # ----------------------------------------------------------------------
 contains_float() {
     local expr="$1"
@@ -60,7 +60,7 @@ contains_float() {
 }
 
 # ----------------------------------------------------------------------
-# Tokenizer - handles integers AND floats
+# Tokenizer - handles integers, floats, and parentheses
 # ----------------------------------------------------------------------
 tokenize() {
     local expr="$1"
@@ -133,7 +133,7 @@ tokenize() {
 }
 
 # ----------------------------------------------------------------------
-# Shunting-yard algorithm - infix to postfix (RPN)
+# Shunting-yard algorithm - infix to postfix (RPN) with full parentheses support
 # ----------------------------------------------------------------------
 precedence() {
     case "$1" in
@@ -192,43 +192,63 @@ to_rpn() {
 }
 
 # ----------------------------------------------------------------------
-# Generate float constant declarations with type tags
+# Generate assembly code from RPN tokens - ALL IN ONE FUNCTION
 # ----------------------------------------------------------------------
-generate_float_constants() {
-    local tokens=("$@")
-    local idx=0
-    local result=""
-    for token in "${tokens[@]}"; do
-        if [[ "$token" == FLOAT:* ]]; then
-            local val="${token#*:}"
-            result="${result}    ${VAR_NAME}_float${idx} dd ${val}"$'\n'
-            result="${result}    ${VAR_NAME}_float${idx}_type dq TYPE_FLOAT"$'\n'
-            idx=$((idx+1))
-        fi
-    done
-    echo "$result"
-}
-
-# ----------------------------------------------------------------------
-# Generate assembly code from RPN tokens (ALL RUNTIME EXECUTION)
-# ----------------------------------------------------------------------
-generate_asm_code() {
+generate_full_asm() {
     local use_float=$1
     shift
     local rpn_tokens=("$@")
-    local code=""
     local const_idx=0
     
-    code="${code}    ; ========================================="$'\n'
-    code="${code}    ; Runtime evaluation of: $VAR_VALUE"$'\n'
-    code="${code}    ; Variable: $VAR_NAME"$'\n'
+    # Generate data section
+    echo "    ; ========================================="
+    echo "    ; Variable: $VAR_NAME"
+    echo "    ; Expression: $VAR_VALUE"
     
     if [ "$use_float" = true ]; then
-        code="${code}    ; Type: FLOAT (using x87 FPU)"$'\n'
+        echo "    ; Type: FLOAT (runtime evaluated)"
+        echo "    ; ========================================="
+        
+        # Generate float constants
+        for token in "${rpn_tokens[@]}"; do
+            if [[ "$token" == FLOAT:* ]]; then
+                local val="${token#*:}"
+                echo "    ${VAR_NAME}_float${const_idx} dd ${val}"
+                echo "    ${VAR_NAME}_float${const_idx}_type dq TYPE_FLOAT"
+                const_idx=$((const_idx+1))
+            fi
+        done
+        
+        echo "    ${VAR_NAME}_float_val dq 0    ; Storage for float result"
+        echo "    ${VAR_NAME}_str times 32 db 0    ; Per-variable string buffer"
+        echo "    ${VAR_NAME} dq ${VAR_NAME}_str    ; Pointer for printing"
+        echo "    ${VAR_NAME}_type dq TYPE_FLOAT    ; RUNTIME TYPE TAG"
     else
-        code="${code}    ; Type: INTEGER"$'\n'
+        echo "    ; Type: INTEGER (runtime evaluated)"
+        echo "    ; ========================================="
+        echo "    ${VAR_NAME} dq 0    ; Storage for integer result"
+        echo "    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"
     fi
-    code="${code}    ; ========================================="$'\n'
+    
+    # Separator between data and code
+    echo ""
+    echo "DATA_CODE_SEPARATOR"
+    echo ""
+    
+    # Generate code section
+    echo "    ; ========================================="
+    echo "    ; Runtime evaluation of: $VAR_VALUE"
+    echo "    ; Variable: $VAR_NAME"
+    
+    if [ "$use_float" = true ]; then
+        echo "    ; Type: FLOAT (using x87 FPU)"
+    else
+        echo "    ; Type: INTEGER"
+    fi
+    echo "    ; ========================================="
+    
+    # Reset const_idx for code generation
+    const_idx=0
     
     for token in "${rpn_tokens[@]}"; do
         local type="${token%%:*}"
@@ -236,78 +256,87 @@ generate_asm_code() {
         
         if [ "$type" = "INT" ]; then
             if [ "$use_float" = true ]; then
-                code="${code}    push $val"$'\n'
-                code="${code}    fild qword [rsp]"$'\n'
-                code="${code}    add rsp, 8"$'\n'
+                echo "    ; Push integer $val and convert to float"
+                echo "    push $val"
+                echo "    fild qword [rsp]"
+                echo "    add rsp, 8"
             else
-                code="${code}    push $val"$'\n'
+                echo "    ; Push integer $val"
+                echo "    push $val"
             fi
-            
         elif [ "$type" = "FLOAT" ]; then
-            local label="${VAR_NAME}_float${const_idx}"
-            code="${code}    fld dword [${label}]"$'\n'
+            echo "    ; Load float constant ${VAR_NAME}_float${const_idx}"
+            echo "    fld dword [${VAR_NAME}_float${const_idx}]"
             const_idx=$((const_idx+1))
-            
         elif [ "$type" = "OP" ]; then
             if [ "$use_float" = true ]; then
                 case "$val" in
-                    '+') code="${code}    faddp st1, st0"$'\n' ;;
-                    '-') code="${code}    fsubp st1, st0"$'\n' ;;
-                    '*') code="${code}    fmulp st1, st0"$'\n' ;;
-                    '/') code="${code}    fdivp st1, st0"$'\n' ;;
-                    '%') code="${code}    fprem"$'\n'
-                         code="${code}    fstp st1"$'\n' ;;
+                    '+') echo "    ; Float addition"
+                         echo "    faddp st1, st0" ;;
+                    '-') echo "    ; Float subtraction"
+                         echo "    fsubp st1, st0" ;;
+                    '*') echo "    ; Float multiplication"
+                         echo "    fmulp st1, st0" ;;
+                    '/') echo "    ; Float division"
+                         echo "    fdivp st1, st0" ;;
+                    '%') echo "    ; Float modulo"
+                         echo "    fprem"
+                         echo "    fstp st1" ;;
                 esac
             else
                 case "$val" in
-                    '+') code="${code}    pop rbx"$'\n'
-                         code="${code}    pop rax"$'\n'
-                         code="${code}    add rax, rbx"$'\n'
-                         code="${code}    push rax"$'\n' ;;
-                    '-') code="${code}    pop rbx"$'\n'
-                         code="${code}    pop rax"$'\n'
-                         code="${code}    sub rax, rbx"$'\n'
-                         code="${code}    push rax"$'\n' ;;
-                    '*') code="${code}    pop rbx"$'\n'
-                         code="${code}    pop rax"$'\n'
-                         code="${code}    imul rbx"$'\n'
-                         code="${code}    push rax"$'\n' ;;
-                    '/') code="${code}    xor rdx, rdx"$'\n'
-                         code="${code}    pop rbx"$'\n'
-                         code="${code}    pop rax"$'\n'
-                         code="${code}    idiv rbx"$'\n'
-                         code="${code}    push rax"$'\n' ;;
-                    '%') code="${code}    xor rdx, rdx"$'\n'
-                         code="${code}    pop rbx"$'\n'
-                         code="${code}    pop rax"$'\n'
-                         code="${code}    idiv rbx"$'\n'
-                         code="${code}    push rdx"$'\n' ;;
+                    '+') echo "    ; Integer addition"
+                         echo "    pop rbx"
+                         echo "    pop rax"
+                         echo "    add rax, rbx"
+                         echo "    push rax" ;;
+                    '-') echo "    ; Integer subtraction"
+                         echo "    pop rbx"
+                         echo "    pop rax"
+                         echo "    sub rax, rbx"
+                         echo "    push rax" ;;
+                    '*') echo "    ; Integer multiplication"
+                         echo "    pop rbx"
+                         echo "    pop rax"
+                         echo "    imul rbx"
+                         echo "    push rax" ;;
+                    '/') echo "    ; Integer division"
+                         echo "    xor rdx, rdx"
+                         echo "    pop rbx"
+                         echo "    pop rax"
+                         echo "    idiv rbx"
+                         echo "    push rax" ;;
+                    '%') echo "    ; Integer modulo"
+                         echo "    xor rdx, rdx"
+                         echo "    pop rbx"
+                         echo "    pop rax"
+                         echo "    idiv rbx"
+                         echo "    push rdx" ;;
                 esac
             fi
         fi
     done
     
-    # Store result with runtime type tag
-    code="${code}    "$'\n'
-    code="${code}    ; Store result in variable with type tag"$'\n'
+    echo ""
+    echo "    ; Store result in variable with type tag"
     if [ "$use_float" = true ]; then
-        code="${code}    sub rsp, 8"$'\n'
-        code="${code}    fstp qword [rsp]"$'\n'
-        code="${code}    movsd xmm0, [rsp]"$'\n'
-        code="${code}    add rsp, 8"$'\n'
-        code="${code}    movsd [${VAR_NAME}_float_val], xmm0"$'\n'
-        code="${code}    mov rdi, ${VAR_NAME}_str    ; output buffer"$'\n'
-        code="${code}    movsd xmm0, [${VAR_NAME}_float_val]"$'\n'
-        code="${code}    call float_to_str"$'\n'
-        code="${code}    mov qword [${VAR_NAME}], ${VAR_NAME}_str    ; Store pointer to string"$'\n'
-        code="${code}    mov qword [${VAR_NAME}_type], TYPE_FLOAT    ; Set runtime type tag"$'\n'
+        echo "    ; Store float result"
+        echo "    sub rsp, 8"
+        echo "    fstp qword [rsp]"
+        echo "    movsd xmm0, [rsp]"
+        echo "    add rsp, 8"
+        echo "    movsd [${VAR_NAME}_float_val], xmm0"
+        echo "    mov rdi, ${VAR_NAME}_str    ; output buffer"
+        echo "    movsd xmm0, [${VAR_NAME}_float_val]"
+        echo "    call float_to_str"
+        echo "    mov qword [${VAR_NAME}], ${VAR_NAME}_str    ; Store pointer to string"
+        echo "    mov qword [${VAR_NAME}_type], TYPE_FLOAT    ; Set runtime type tag"
     else
-        code="${code}    pop rax"$'\n'
-        code="${code}    mov [${VAR_NAME}], rax"$'\n'
-        code="${code}    mov qword [${VAR_NAME}_type], TYPE_NUMBER    ; Set runtime type tag"$'\n'
+        echo "    ; Store integer result"
+        echo "    pop rax"
+        echo "    mov [${VAR_NAME}], rax"
+        echo "    mov qword [${VAR_NAME}_type], TYPE_NUMBER    ; Set runtime type tag"
     fi
-    
-    echo "$code"
 }
 
 # ----------------------------------------------------------------------
@@ -316,42 +345,29 @@ generate_asm_code() {
 DATA_SECTION=""
 CODE_SECTION=""
 IS_FLOAT=false
+FULL_OUTPUT=""
 
 # CHECK FOR OPERATORS FIRST (runtime evaluation needed)
 if has_operators "$VAR_VALUE"; then
     echo "DEBUG: Expression contains operators, generating runtime evaluation code" >&2
     
     mapfile -t tokens < <(tokenize "$VAR_VALUE")
+    echo "DEBUG: Tokens: ${tokens[*]}" >&2
+    
     mapfile -t rpn_tokens < <(to_rpn "${tokens[@]}")
+    echo "DEBUG: RPN: ${rpn_tokens[*]}" >&2
     
     if contains_float "$VAR_VALUE"; then
         IS_FLOAT=true
-        FLOAT_CONSTANTS=$(generate_float_constants "${rpn_tokens[@]}")
-        
-        DATA_SECTION="    ; ========================================="$'\n'
-        DATA_SECTION="${DATA_SECTION}    ; Variable: $VAR_NAME"$'\n'
-        DATA_SECTION="${DATA_SECTION}    ; Expression: $VAR_VALUE"$'\n'
-        DATA_SECTION="${DATA_SECTION}    ; Type: FLOAT (runtime evaluated)"$'\n'
-        DATA_SECTION="${DATA_SECTION}    ; ========================================="$'\n'
-        DATA_SECTION="${DATA_SECTION}${FLOAT_CONSTANTS}"
-        DATA_SECTION="${DATA_SECTION}    ${VAR_NAME}_float_val dq 0    ; Storage for float result"$'\n'
-        DATA_SECTION="${DATA_SECTION}    ${VAR_NAME}_str times 32 db 0    ; Per-variable string buffer"$'\n'
-        DATA_SECTION="${DATA_SECTION}    ${VAR_NAME} dq ${VAR_NAME}_str    ; Pointer for printing"$'\n'
-        DATA_SECTION="${DATA_SECTION}    ${VAR_NAME}_type dq TYPE_FLOAT    ; RUNTIME TYPE TAG"$'\n'
-        
-        CODE_SECTION=$(generate_asm_code true "${rpn_tokens[@]}")
+        FULL_OUTPUT=$(generate_full_asm true "${rpn_tokens[@]}")
     else
         IS_FLOAT=false
-        DATA_SECTION="    ; ========================================="$'\n'
-        DATA_SECTION="${DATA_SECTION}    ; Variable: $VAR_NAME"$'\n'
-        DATA_SECTION="${DATA_SECTION}    ; Expression: $VAR_VALUE"$'\n'
-        DATA_SECTION="${DATA_SECTION}    ; Type: INTEGER (runtime evaluated)"$'\n'
-        DATA_SECTION="${DATA_SECTION}    ; ========================================="$'\n'
-        DATA_SECTION="${DATA_SECTION}    ${VAR_NAME} dq 0    ; Storage for integer result"$'\n'
-        DATA_SECTION="${DATA_SECTION}    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"$'\n'
-        
-        CODE_SECTION=$(generate_asm_code false "${rpn_tokens[@]}")
+        FULL_OUTPUT=$(generate_full_asm false "${rpn_tokens[@]}")
     fi
+    
+    # Split the output at the separator
+    DATA_SECTION=$(echo "$FULL_OUTPUT" | sed -n '1,/DATA_CODE_SEPARATOR/p' | head -n -1)
+    CODE_SECTION=$(echo "$FULL_OUTPUT" | sed -n '/DATA_CODE_SEPARATOR/,$p' | tail -n +2)
 
 # HANDLE HEX, BINARY, OCTAL LITERALS
 elif [[ "$VAR_VALUE" =~ ^-?0[xX][0-9a-fA-F]+$ ]] || \
@@ -360,11 +376,11 @@ elif [[ "$VAR_VALUE" =~ ^-?0[xX][0-9a-fA-F]+$ ]] || \
     echo "DEBUG: Non-decimal literal detected" >&2
     
     DATA_SECTION="    ; ========================================="$'\n'
-    DATA_SECTION="${DATA_SECTION}    ; Variable: $VAR_NAME = $VAR_VALUE"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ; Type: INTEGER (literal)"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ; ========================================="$'\n'
-    DATA_SECTION="${DATA_SECTION}    ${VAR_NAME} dq $VAR_VALUE"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"$'\n'
+    DATA_SECTION+="    ; Variable: $VAR_NAME = $VAR_VALUE"$'\n'
+    DATA_SECTION+="    ; Type: INTEGER (literal)"$'\n'
+    DATA_SECTION+="    ; ========================================="$'\n'
+    DATA_SECTION+="    ${VAR_NAME} dq $VAR_VALUE"$'\n'
+    DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"
 
 # HANDLE FLOAT LITERALS
 elif [[ "$VAR_VALUE" =~ ^-?[0-9]*\.[0-9]+$ ]] || [[ "$VAR_VALUE" =~ ^-?[0-9]+[eE][-+]?[0-9]+$ ]]; then
@@ -373,29 +389,29 @@ elif [[ "$VAR_VALUE" =~ ^-?[0-9]*\.[0-9]+$ ]] || [[ "$VAR_VALUE" =~ ^-?[0-9]+[eE
     FLOAT_VAL=$(printf "%.10f" "$VAR_VALUE" 2>/dev/null | sed 's/\.0*$//' || echo "$VAR_VALUE")
     
     DATA_SECTION="    ; ========================================="$'\n'
-    DATA_SECTION="${DATA_SECTION}    ; Variable: $VAR_NAME = $VAR_VALUE"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ; Type: FLOAT (literal)"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ; ========================================="$'\n'
-    DATA_SECTION="${DATA_SECTION}    ${VAR_NAME}_float_val dq 0    ; Storage for float value"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ${VAR_NAME}_float dd $FLOAT_VAL    ; The actual float constant"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ${VAR_NAME}_float_str db '$FLOAT_VAL', 0    ; String representation"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ${VAR_NAME} dq ${VAR_NAME}_float_str    ; Pointer for printing"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ${VAR_NAME}_type dq TYPE_FLOAT    ; RUNTIME TYPE TAG"$'\n'
+    DATA_SECTION+="    ; Variable: $VAR_NAME = $VAR_VALUE"$'\n'
+    DATA_SECTION+="    ; Type: FLOAT (literal)"$'\n'
+    DATA_SECTION+="    ; ========================================="$'\n'
+    DATA_SECTION+="    ${VAR_NAME}_float_val dq 0    ; Storage for float value"$'\n'
+    DATA_SECTION+="    ${VAR_NAME}_float dd $FLOAT_VAL    ; The actual float constant"$'\n'
+    DATA_SECTION+="    ${VAR_NAME}_float_str db '$FLOAT_VAL', 0    ; String representation"$'\n'
+    DATA_SECTION+="    ${VAR_NAME} dq ${VAR_NAME}_float_str    ; Pointer for printing"$'\n'
+    DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_FLOAT    ; RUNTIME TYPE TAG"$'\n'
     
     CODE_SECTION="    ; Initialize float value at runtime"$'\n'
-    CODE_SECTION="${CODE_SECTION}    fld dword [${VAR_NAME}_float]"$'\n'
-    CODE_SECTION="${CODE_SECTION}    fstp qword [${VAR_NAME}_float_val]"$'\n'
+    CODE_SECTION+="    fld dword [${VAR_NAME}_float]"$'\n'
+    CODE_SECTION+="    fstp qword [${VAR_NAME}_float_val]"
 
 # HANDLE INTEGER LITERALS (default case)
 else
     echo "DEBUG: Integer literal detected" >&2
     
     DATA_SECTION="    ; ========================================="$'\n'
-    DATA_SECTION="${DATA_SECTION}    ; Variable: $VAR_NAME = $VAR_VALUE"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ; Type: INTEGER (literal)"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ; ========================================="$'\n'
-    DATA_SECTION="${DATA_SECTION}    ${VAR_NAME} dq $VAR_VALUE"$'\n'
-    DATA_SECTION="${DATA_SECTION}    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"$'\n'
+    DATA_SECTION+="    ; Variable: $VAR_NAME = $VAR_VALUE"$'\n'
+    DATA_SECTION+="    ; Type: INTEGER (literal)"$'\n'
+    DATA_SECTION+="    ; ========================================="$'\n'
+    DATA_SECTION+="    ${VAR_NAME} dq $VAR_VALUE"$'\n'
+    DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"
 fi
 
 # ----------------------------------------------------------------------
