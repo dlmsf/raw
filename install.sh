@@ -750,10 +750,18 @@ interrupt_handler() {
 trap interrupt_handler INT TERM
 
 # Parse command line arguments
+# Check if a JavaScript file was provided as an argument
+PROVIDED_JS_FILE=""
 for arg in "$@"; do
   case "$arg" in
     -h|--help) show_help ;;
     -log) LOG_MODE=true; touch "$LOG_FILE" ;;
+    *)
+      # Check if this argument is a .js file (not a flag)
+      if [[ "$arg" != -* ]] && [[ "$arg" == *.js ]]; then
+        PROVIDED_JS_FILE="$arg"
+      fi
+      ;;
   esac
 done
 
@@ -802,37 +810,50 @@ if [ ! -d "$INSTALL_DIR" ]; then
 fi
 
 # Handle existing installation
+# If a JS file was provided, force update (option 1) automatically
 if [ -d "$INSTALL_DIR" ]; then
   log_message "Existing installation found at: $INSTALL_DIR"
-  echo "Choose an option:"
-  echo "  1 = Update"
-  echo "  2 = Remove"
-  echo "  3 = Exit"
-  printf "Enter your choice [1-3]: "
-  read choice
   
-  case "$choice" in
-    1) 
-      # Completely remove existing installation
-      log_message "Removing existing installation for clean update..."
-      remove_installation
-      log_message "Clean removal completed. Proceeding with fresh installation..."
-      IS_FIRST_INSTALL=true
-      ;;
-    2) 
-      remove_installation
-      echo "Uninstallation completed."
-      exit 0
-      ;;
-    3) 
-      echo "Exiting."
-      exit 0
-      ;;
-    *) 
-      echo "Invalid choice. Exiting."
-      exit 1
-      ;;
-  esac
+  if [ -n "$PROVIDED_JS_FILE" ]; then
+    # JavaScript file provided - force update automatically
+    log_message "JavaScript file provided - forcing update..."
+    echo "JavaScript file detected: $PROVIDED_JS_FILE"
+    echo "Automatically updating installation to run with provided file..."
+    remove_installation
+    log_message "Clean removal completed. Proceeding with fresh installation..."
+    IS_FIRST_INSTALL=true
+  else
+    # No JavaScript file - show interactive menu
+    echo "Choose an option:"
+    echo "  1 = Update"
+    echo "  2 = Remove"
+    echo "  3 = Exit"
+    printf "Enter your choice [1-3]: "
+    read choice
+    
+    case "$choice" in
+      1) 
+        # Completely remove existing installation
+        log_message "Removing existing installation for clean update..."
+        remove_installation
+        log_message "Clean removal completed. Proceeding with fresh installation..."
+        IS_FIRST_INSTALL=true
+        ;;
+      2) 
+        remove_installation
+        echo "Uninstallation completed."
+        exit 0
+        ;;
+      3) 
+        echo "Exiting."
+        exit 0
+        ;;
+      *) 
+        echo "Invalid choice. Exiting."
+        exit 1
+        ;;
+    esac
+  fi
 fi
 
 # Install system packages on first-time installation
@@ -908,45 +929,61 @@ echo
 
 log_message "RawJS and BASM installation completed!"
 
-echo
-echo "=========================================="
-echo "RAWJS & BASM INSTALLATION SUCCESSFUL"
-echo "=========================================="
-echo
-echo "Installation directory: $INSTALL_DIR"
-echo "Command symlinks:"
-echo "  • $BIN_DIR/raw (RawJS JavaScript Runtime)"
-if [ "$INSTALL_BASM" = true ]; then
-  echo "  • $BIN_DIR/basm (BASM Universal Runner)"
+# =============================================================================
+# DISPLAY FINAL MESSAGE OR EXECUTE PROVIDED JAVASCRIPT FILE
+# =============================================================================
+
+# Check if a JavaScript file was provided
+if [ -n "$PROVIDED_JS_FILE" ]; then
+    # A JavaScript file was provided - execute it using the installed raw command
+    echo "=========================================="
+    echo "Executing provided JavaScript file: $PROVIDED_JS_FILE"
+    echo "=========================================="
+    echo
+    
+    # Run the raw command with the provided JavaScript file
+    if [ -f "$BIN_DIR/raw" ] && [ -x "$BIN_DIR/raw" ]; then
+        raw "$PROVIDED_JS_FILE"
+        JS_EXIT_CODE=$?
+        echo
+        echo "=========================================="
+        echo "JavaScript execution completed with exit code: $JS_EXIT_CODE"
+        echo "=========================================="
+        exit $JS_EXIT_CODE
+    else
+        echo "Error: raw command not found or not executable after installation" >&2
+        exit 1
+    fi
+else
+    # No JavaScript file provided - show the standard usage message
+    # Display the same usage message that appears when running Raw.sh without arguments
+    echo
+    echo "=========================================="
+    echo "RAWJS & BASM INSTALLATION SUCCESSFUL"
+    echo "=========================================="
+    echo
+    echo "Usage: bash Raw.sh [--log] <path/to/file.js> [args...]"
+    echo "       bash Raw.sh --reset"
+    echo "       bash Raw.sh --test"
+    echo "       bash Raw.sh --tool [command] [args...]"
+    echo "       bash Raw.sh --<tool> [args...]"
+    echo "       bash Raw.sh --tools"
+    echo "       bash Raw.sh --version"
+    echo "       bash Raw.sh --asm [path/to/file.js] [args...]"
+    echo
+    if [ "$INSTALL_BASM" = true ]; then
+        echo "Available commands:"
+        echo "  raw              RawJS JavaScript Runtime"
+        echo "  basm             BASM Universal Runner (.asm, .sh, binary files)"
+        echo
+    fi
+    echo "Installation directory: $INSTALL_DIR"
+    echo "Command symlinks:"
+    echo "  • $BIN_DIR/raw (RawJS JavaScript Runtime)"
+    if [ "$INSTALL_BASM" = true ]; then
+        echo "  • $BIN_DIR/basm (BASM Universal Runner)"
+    fi
+    echo
+    echo "To uninstall, run this script again and choose option 2."
+    echo "=========================================="
 fi
-echo
-echo "RAWJS COMMAND:"
-echo "  • JavaScript runtime environment"
-echo "  • Execute JavaScript files and scripts"
-echo
-if [ "$INSTALL_BASM" = true ]; then
-  echo "BASM COMMAND:"
-  echo "  • Universal runner for .asm, .sh, and binary files"
-  echo "  • Intelligent fallback logic"
-  echo "  • Architecture detection for .asm compilation"
-fi
-echo
-echo "Usage examples:"
-echo "  raw script.js                    # Run JavaScript file"
-echo "  raw --eval \"console.log('Hi')\"   # Evaluate JavaScript code"
-echo "  raw                              # Start REPL"
-echo
-if [ "$INSTALL_BASM" = true ]; then
-  echo "  basm hello.asm                    # Compile and run .asm file"
-  echo "  basm script.sh arg1 arg2          # Run shell script"
-  echo "  basm mybinary arg1 arg2           # Run binary executable"
-  echo "  basm program                      # Auto-detect program.asm/program.sh/program"
-  echo
-  echo "BASM Fallback logic (when file not found):"
-  echo "  1. file.asm → file.sh → file"
-  echo "  2. file.sh → file.asm → file"
-  echo "  3. file → file.asm → file.sh"
-fi
-echo
-echo "To uninstall, run this script again and choose option 2."
-echo "=========================================="
