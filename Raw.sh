@@ -209,6 +209,8 @@ get_tool_working_dir() {
         "chain")     echo "caller" ;;
         "build")     echo "caller" ;;
         "bin")     echo "caller" ;;
+        "emb")     echo "caller" ;;
+        "jsclean")     echo "caller" ;;
         
         # =====================================================================
         # ADD YOUR TOOLS HERE with their working directory
@@ -1062,7 +1064,7 @@ get_tool_description() {
     
     # Execute the tool function without arguments and capture first line of output
     local description=""
-    description=$( (tool_${tool_name} 2>&1 || true) | sed 's/\x1b\[[0-9;]*m//g' | head -n 1 | tr '\n' ' ' | sed 's/  */ /g' | xargs)
+    description=$( (CALLER_DIR="$SCRIPT_DIR" tool_${tool_name} 2>&1 || true) | sed 's/\x1b\[[0-9;]*m//g' | head -n 1 | tr '\n' ' ' | sed 's/  */ /g' | xargs)
     
     # If no description, use a placeholder
     if [ -z "$description" ]; then
@@ -1333,6 +1335,26 @@ tool_chain() {
     
     # Execute with automatic working directory handling
     execute_file "log" "./._/._/._/chaincheck.sh" "$working_dir" "$@"
+    
+    return 0
+}
+
+tool_jsclean() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "jsclean")
+    
+    # Execute with automatic working directory handling
+    execute_file "log" "../._/._/._/._/jsclean.sh" "$working_dir" "$@"
+    
+    return 0
+}
+
+tool_emb() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "emb")
+    
+    # Execute with automatic working directory handling
+    execute_file "log" "../._/._/._/._/emb.sh" "$working_dir" "$@"
     
     return 0
 }

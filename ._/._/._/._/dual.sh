@@ -37,9 +37,57 @@ strip_colors() {
     sed 's/\x1b\[[0-9;]*m//g' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'
 }
 
-# Function to normalize decimal numbers - round to 4 decimal places
+# Function to normalize decimal numbers - improved precision matching
 normalize_decimals() {
-    sed -E 's/([0-9]+\.[0-9]{4})[0-9]*/\1/g' | sed -E 's/([0-9]+\.[0-9]{1,3})$/&\0\0\0/g' | sed -E 's/([0-9]+\.[0-9]{4})[0-9]*$/\1/'
+    # Process each line independently to avoid cross-line contamination
+    while IFS= read -r line; do
+        # Skip empty lines
+        if [[ -z "$line" ]]; then
+            echo ""
+            continue
+        fi
+        
+        # Extract all numbers from the line and normalize them
+        echo "$line" | awk '
+        {
+            # Replace all numbers with normalized versions
+            result = ""
+            remainder = $0
+            
+            while (match(remainder, /[0-9]+\.?[0-9]*([eE][+-]?[0-9]+)?/)) {
+                # Get the part before the number
+                result = result substr(remainder, 1, RSTART-1)
+                
+                # Get the matched number
+                num = substr(remainder, RSTART, RLENGTH)
+                
+                # Normalize the number: round to 4 decimal places
+                if (num ~ /\./) {
+                    # Handle scientific notation
+                    if (num ~ /[eE]/) {
+                        normalized = sprintf("%.4f", num)
+                    } else {
+                        # Round to 4 decimal places
+                        normalized = sprintf("%.4f", num + 0.0)
+                    }
+                    # Remove trailing zeros after decimal point, but keep at least one
+                    sub(/\.?0+$/, "", normalized)
+                    if (normalized !~ /\./) {
+                        normalized = normalized ".0"
+                    }
+                } else {
+                    normalized = num
+                }
+                
+                result = result normalized
+                remainder = substr(remainder, RSTART + RLENGTH)
+            }
+            
+            # Add any remaining part
+            result = result remainder
+            print result
+        }'
+    done
 }
 
 # Function to normalize output (strip colors, remove carriage returns, trim spaces)
