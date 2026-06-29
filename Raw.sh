@@ -32,9 +32,13 @@ if [ $# -gt 0 ]; then
             # Store remaining arguments as tool args
             TOOL_ARGS="$@"
         fi
-    elif [ "$1" = "--tools" ]; then
-        # New flag: list all available tools
-        SPECIAL_MODE="--tools"
+    elif [ "$1" = "--tools" ] || [ "$1" = "--stools" ] || [ "$1" = "--stool" ]; then
+        # Support both --tools (full) and --stools/--stool (compact)
+        if [ "$1" = "--stools" ] || [ "$1" = "--stool" ]; then
+            SPECIAL_MODE="--stools"
+        else
+            SPECIAL_MODE="--tools"
+        fi
         shift
     elif [ "$1" = "--asm" ]; then
         ASM_MODE="true"
@@ -66,7 +70,7 @@ if [ $# -gt 0 ]; then
         exit 0
     else
         # NEW: Check if first argument is a tool name (starts with -- and not a known flag)
-        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--asm" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ]; then
+        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--asm" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--stools" ] && [ "$1" != "--stool" ]; then
             # Extract tool name by removing leading --
             TOOL_COMMAND="${1#--}"
             TOOL_MODE="true"
@@ -878,6 +882,7 @@ show_usage() {
     echo -e "${YELLOW}       bash Raw.sh --tool [command] [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --<tool> [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --tools${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --stools${NC}"
     echo -e "${YELLOW}       bash Raw.sh --version${NC}"
     echo -e "${YELLOW}       bash Raw.sh --asm [path/to/file.js] [args...]${NC}"
 }
@@ -1127,7 +1132,7 @@ get_tools_for_group() {
     printf '%s\n' "${group_tools[@]}"
 }
 
-# Function: Display formatted tool list with groups and colors
+# Function: Display formatted tool list with groups and colors (full version)
 display_tool_list_with_groups() {
     # Build the tool-group map
     build_tool_group_map
@@ -1255,6 +1260,78 @@ display_tool_list_with_groups() {
     echo -e "  \033[0;37mglobal\033[0m  - Execute from Raw.sh directory ($SCRIPT_DIR)"
     echo -e "  \033[0;37mcaller\033[0m  - Execute from where you called the command ($CALLER_DIR)"
     echo -e "  \033[0;37mfile\033[0m    - Execute from the tool file's own directory"
+}
+
+# Function: Display compact tool list (for --stools/--stool)
+# Designed to fit in extremely small terminals
+display_compact_tool_list() {
+    # Build the tool-group map
+    build_tool_group_map
+    
+    # Get all available tool functions
+    local all_tools=$(declare -F | grep -o 'tool_[a-zA-Z0-9_]*' | grep -v 'tool_mode\|tool_command\|tool_args\|tool_commands\|tool_group' | sed 's/^tool_//' | sort)
+    
+    # Collect all tools by group
+    local group_tools_map=""
+    
+    # Process defined groups first (in order)
+    for group_name in "${TOOL_GROUPS_ORDER[@]}"; do
+        local group_tools_list=$(get_tools_for_group "$group_name")
+        if [ -n "$group_tools_list" ]; then
+            local group_color=$(get_group_color "$group_name")
+            local tools_in_group=""
+            
+            while IFS= read -r tool_name; do
+                if [ -n "$tool_name" ]; then
+                    if [ -n "$tools_in_group" ]; then
+                        tools_in_group="$tools_in_group,"
+                    fi
+                    tools_in_group="$tools_in_group$tool_name"
+                fi
+            done <<< "$group_tools_list"
+            
+            if [ -n "$tools_in_group" ]; then
+                group_tools_map="$group_tools_map"$'\n'"$group_color|$group_name|$tools_in_group"
+            fi
+        fi
+    done
+    
+    # Process General group
+    local general_tools_list=$(get_tools_for_group "General")
+    if [ -n "$general_tools_list" ]; then
+        local general_color=$(get_group_color "General")
+        local tools_in_general=""
+        
+        while IFS= read -r tool_name; do
+            if [ -n "$tool_name" ]; then
+                if [ -n "$tools_in_general" ]; then
+                    tools_in_general="$tools_in_general,"
+                fi
+                tools_in_general="$tools_in_general$tool_name"
+            fi
+        done <<< "$general_tools_list"
+        
+        if [ -n "$tools_in_general" ]; then
+            group_tools_map="$group_tools_map"$'\n'"$general_color|General|$tools_in_general"
+        fi
+    fi
+    
+    # Display compact header
+    echo -e "\033[0;34mTools:\033[0m"
+    
+    # Display groups in compact format
+    while IFS='|' read -r group_color group_name tools_list; do
+        if [ -n "$group_name" ]; then
+            # Display group name with color
+            printf "\033[%sm%s:\033[0m " "$group_color" "$group_name"
+            # Display tools separated by spaces
+            echo "$tools_list" | tr ',' ' '
+        fi
+    done <<< "$group_tools_map"
+    
+    echo ""
+    echo -e "\033[0;90mUse --tools for detailed view\033[0m"
+    echo -e "\033[1;33mUsage: --<tool> [args]\033[0m"
 }
 
 # ============================================
@@ -1687,9 +1764,12 @@ main_flow() {
         exit $?
     fi
     
-    # Step 2: Check for --tools special mode
+    # Step 2: Check for --tools or --stools/--stool special mode
     if [ "$SPECIAL_MODE" = "--tools" ]; then
         display_tool_list_with_groups
+        exit 0
+    elif [ "$SPECIAL_MODE" = "--stools" ]; then
+        display_compact_tool_list
         exit 0
     fi
     
