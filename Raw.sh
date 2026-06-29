@@ -1263,7 +1263,7 @@ display_tool_list_with_groups() {
 }
 
 # Function: Display compact tool list (for --stools/--stool)
-# Designed to fit in extremely small terminals
+# Designed to fit in extremely small terminals with color toggling for clarity
 display_compact_tool_list() {
     # Build the tool-group map
     build_tool_group_map
@@ -1319,13 +1319,26 @@ display_compact_tool_list() {
     # Display compact header
     echo -e "\033[0;34mTools:\033[0m"
     
-    # Display groups in compact format
+    # Display groups in compact format with alternating colors for each tool
     while IFS='|' read -r group_color group_name tools_list; do
         if [ -n "$group_name" ]; then
             # Display group name with color
             printf "\033[%sm%s:\033[0m " "$group_color" "$group_name"
-            # Display tools separated by spaces
-            echo "$tools_list" | tr ',' ' '
+            
+            # Display tools with alternating background colors for clarity
+            local tool_index=0
+            IFS=',' read -ra TOOLS_ARRAY <<< "$tools_list"
+            for tool_name in "${TOOLS_ARRAY[@]}"; do
+                if [ $((tool_index % 2)) -eq 0 ]; then
+                    # Even index - slightly darker background
+                    printf "\033[48;5;235m\033[%sm%s\033[0m " "$group_color" "$tool_name"
+                else
+                    # Odd index - slightly lighter background
+                    printf "\033[48;5;238m\033[%sm%s\033[0m " "$group_color" "$tool_name"
+                fi
+                ((tool_index++))
+            done
+            echo ""
         fi
     done <<< "$group_tools_map"
     
