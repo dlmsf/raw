@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Global flag for force overwrite
+FORCE_OVERWRITE=false
+
 # Function to process a single JavaScript file
 process_file() {
     local input_file="$1"
@@ -17,6 +20,16 @@ process_file() {
     local output_script="${filename%.*}.sh"
 
     echo "Processing: $filename"
+
+    # Check if output script already exists and handle according to force flag
+    if [ -f "$output_script" ]; then
+        if [ "$FORCE_OVERWRITE" = false ]; then
+            echo "  Skipping: $output_script already exists (use --force to overwrite)"
+            return 0
+        else
+            echo "  Force mode: overwriting existing $output_script"
+        fi
+    fi
 
     # Create the self-extracting shell script
     if ! cat > "$output_script" << 'EOF'
@@ -101,16 +114,30 @@ EOF
     return 0
 }
 
-# Check if an argument was provided
-if [ $# -eq 0 ]; then
-    echo "Usage: $0 <javascript-file.js> [javascript-file.js2 ...]"
-    echo "       $0 <directory>"
+# Parse arguments for --force flag
+args=()
+for arg in "$@"; do
+    if [ "$arg" = "--force" ]; then
+        FORCE_OVERWRITE=true
+        echo "Force mode enabled: existing .sh files will be overwritten"
+    else
+        args+=("$arg")
+    fi
+done
+
+# Check if an argument was provided (after removing --force)
+if [ ${#args[@]} -eq 0 ]; then
+    echo "Usage: $0 [--force] <javascript-file.js> [javascript-file.js2 ...]"
+    echo "       $0 [--force] <directory>"
+    echo ""
+    echo "Options:"
+    echo "  --force    Overwrite existing .sh files (default: skip if exists)"
     exit 1
 fi
 
 # Process all arguments WITHOUT set -e at the top level
 processed_count=0
-for arg in "$@"; do
+for arg in "${args[@]}"; do
     echo "Processing argument: '$arg'"
     
     if [ -d "$arg" ]; then
