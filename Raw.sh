@@ -15,6 +15,8 @@ TOOL_COMMAND=""         # Store the tool command
 TOOL_ARGS=""           # Store tool arguments
 ASM_MODE="false"        # New flag for --asm
 ASM_ONLY_MODE="false"   # Flag for --asm without JS file
+BIN_OUTPUT_MODE="false" # Flag for --bin output generation with JS processing
+BIN_OUTPUT_NAME=""      # Store the output name for --bin mode
 
 if [ $# -gt 0 ]; then
     if [ "$1" = "--test" ] || [ "$1" = "--reset" ]; then
@@ -68,9 +70,52 @@ if [ $# -gt 0 ]; then
             echo "RawJS - version unknown"
         fi
         exit 0
+    elif [ "$1" = "--bin" ]; then
+        # Check if --bin is being used as a tool command (no JS file follows)
+        shift  # Remove --bin flag
+        
+        # Check if there are more arguments
+        if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+            # Check if next argument looks like a JS file
+            if [[ "$1" == *.js ]] || [[ "$1" == *.JS ]]; then
+                # It's a JS file - use --bin mode for JS processing
+                BIN_OUTPUT_MODE="true"
+                # JS file will be processed in the JS file section below
+            elif [ -f "$CALLER_DIR/$1" ] && [[ "$1" == *.asm || "$1" == *.ASM ]]; then
+                # It's an existing .asm file - use as tool command
+                TOOL_MODE="true"
+                TOOL_COMMAND="bin"
+                TOOL_ARGS="$@"
+                # Reset the arguments to prevent further processing
+                set -- "$@"
+            else
+                # Could be an output name for --bin mode with JS processing
+                # Check if the next argument after this might be a JS file
+                if [ $# -gt 1 ] && ([[ "$2" == *.js ]] || [[ "$2" == *.JS ]]); then
+                    BIN_OUTPUT_MODE="true"
+                    BIN_OUTPUT_NAME="$1"
+                    shift  # Remove output name
+                    # JS file will be processed in the JS file section below
+                else
+                    # Treat as tool command with arguments
+                    TOOL_MODE="true"
+                    TOOL_COMMAND="bin"
+                    TOOL_ARGS="$1 $@"
+                    shift
+                    set -- "$@"
+                fi
+            fi
+        else
+            # No arguments after --bin, or next is a flag - treat as tool command
+            TOOL_MODE="true"
+            TOOL_COMMAND="bin"
+            TOOL_ARGS="$@"
+            # Reset the arguments to prevent further processing
+            set -- "$@"
+        fi
     else
         # NEW: Check if first argument is a tool name (starts with -- and not a known flag)
-        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--asm" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--stools" ] && [ "$1" != "--stool" ]; then
+        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--asm" ] && [ "$1" != "--bin" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--stools" ] && [ "$1" != "--stool" ]; then
             # Extract tool name by removing leading --
             TOOL_COMMAND="${1#--}"
             TOOL_MODE="true"
@@ -94,16 +139,37 @@ fi
 JS_FILE=""
 JS_ARGS=""
 if [ "$TOOL_MODE" = "false" ] && [ $# -gt 0 ] && [ -z "$SPECIAL_MODE" ] && [ "$ASM_ONLY_MODE" = "false" ]; then
-    # Resolve JS file path relative to caller's directory
-    if [[ "$1" = /* ]]; then
-        # Absolute path
-        JS_FILE="$1"
-    else
-        # Relative path - resolve from caller's directory
-        JS_FILE="$CALLER_DIR/$1"
+    # Check if BIN_OUTPUT_MODE is already set (from --bin parsing above)
+    if [ "$BIN_OUTPUT_MODE" = "false" ]; then
+        # Check for --bin flag before JS file (in case it wasn't caught above)
+        if [ "$1" = "--bin" ]; then
+            BIN_OUTPUT_MODE="true"
+            shift  # Remove --bin flag
+            
+            # Check if next argument is an output name
+            if [ $# -gt 0 ] && [[ "$1" != -* ]]; then
+                # Check if it looks like an output name (not a JS file)
+                if [[ "$1" != *.js ]] && [[ "$1" != *.JS ]]; then
+                    BIN_OUTPUT_NAME="$1"
+                    shift
+                fi
+            fi
+        fi
     fi
-    shift
-    JS_ARGS="$@"
+    
+    # Now process JS file if arguments remain
+    if [ $# -gt 0 ]; then
+        # Resolve JS file path relative to caller's directory
+        if [[ "$1" = /* ]]; then
+            # Absolute path
+            JS_FILE="$1"
+        else
+            # Relative path - resolve from caller's directory
+            JS_FILE="$CALLER_DIR/$1"
+        fi
+        shift
+        JS_ARGS="$@"
+    fi
 fi
 
 # ============================================
@@ -885,6 +951,8 @@ show_usage() {
     echo -e "${YELLOW}       bash Raw.sh --stools${NC}"
     echo -e "${YELLOW}       bash Raw.sh --version${NC}"
     echo -e "${YELLOW}       bash Raw.sh --asm [path/to/file.js] [args...]${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --bin [output_name] <path/to/file.js> [args...]${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --bin [options] <build_output.asm>${NC}"
 }
 
 # Process the JavaScript file - just store path and args for later use
@@ -930,6 +998,53 @@ copy_asm_to_caller() {
         echo -e "${RED}✗ Failed to copy build_output.asm to caller directory${NC}" >&2
         return 1
     fi
+}
+
+# Function: Execute binary generation using basm.sh with --bin flag
+# Usage: generate_binary <asm_file_path> <output_name>
+generate_binary() {
+    local asm_file="$1"
+    local output_name="$2"
+    
+    # Path to the basm script
+    local basm_script="$SCRIPT_DIR/dev/basm/basm.sh"
+    
+    # Check if basm script exists
+    if [ ! -f "$basm_script" ]; then
+        echo -e "${RED}Error: basm script not found at $basm_script${NC}" >&2
+        return 1
+    fi
+    
+    # Make sure basm script is executable
+    chmod +x "$basm_script" 2>/dev/null
+    
+    echo -e "${BLUE}Binary generation started...${NC}"
+    echo -e "${YELLOW}Input ASM: $asm_file${NC}"
+    
+    if [ -n "$output_name" ]; then
+        echo -e "${YELLOW}Output name: $output_name${NC}"
+        # Execute basm with --bin and output name
+        (cd "$CALLER_DIR" && "$basm_script" --log --bin "$output_name" "$asm_file")
+    else
+        # Execute basm with --bin without output name
+        (cd "$CALLER_DIR" && "$basm_script" --log --bin "$asm_file")
+    fi
+    
+    local result=$?
+    
+    if [ $result -eq 0 ]; then
+        echo ""
+        echo -e "${GREEN}Binary generation completed successfully!${NC}"
+        if [ -n "$output_name" ]; then
+            echo -e "${GREEN}Output: $CALLER_DIR/$output_name${NC}"
+        else
+            echo -e "${GREEN}Output: $CALLER_DIR/a.out${NC}"
+        fi
+    else
+        echo -e "${RED}Binary generation failed with exit code: $result${NC}" >&2
+    fi
+    
+    return $result
 }
 
 # ============================================
@@ -1638,45 +1753,10 @@ tool_bin() {
     echo -e "\033[0;34mBinary generation started...\033[0m"
     echo -e "\033[0;37mInput ASM: $asm_file_path\033[0m"
     
-    # Path to the basm script
-    local basm_script="$SCRIPT_DIR/dev/basm/basm.sh"
+    # Use the generate_binary function
+    generate_binary "$asm_file_path" "$output_name"
     
-    # Check if basm script exists
-    if [ ! -f "$basm_script" ]; then
-        echo -e "\033[0;31mError: basm script not found at $basm_script\033[0m" >&2
-        return 1
-    fi
-    
-    # Make sure basm script is executable
-    chmod +x "$basm_script" 2>/dev/null
-    
-    # Build the basm command
-    local basm_args="--bin"
-    if [ -n "$output_name" ]; then
-        basm_args="$basm_args -o $output_name"
-    fi
-    basm_args="$basm_args $asm_file_path"
-    
-    echo -e "\033[0;37mExecuting: basm.sh $basm_args\033[0m"
-    echo ""
-    
-    # Execute basm with --bin flag from the caller's directory
-    (cd "$CALLER_DIR" && "$basm_script" $basm_args)
-    local result=$?
-    
-    if [ $result -eq 0 ]; then
-        echo ""
-        echo -e "\033[0;32mBinary generated successfully!\033[0m"
-        if [ -n "$output_name" ]; then
-            echo -e "\033[0;32mOutput: $CALLER_DIR/$output_name\033[0m"
-        else
-            echo -e "\033[0;32mOutput: $CALLER_DIR/build_output\033[0m"
-        fi
-    else
-        echo -e "\033[0;31mBinary generation failed with exit code: $result\033[0m" >&2
-    fi
-    
-    return $result
+    return $?
 }
 
 # ============================================
@@ -1843,7 +1923,7 @@ main_flow() {
         # NOW EXECUTE YOUR FILES USING THE JS PATH
         # ============================================
 
-         # Start execution timer if in log mode
+        # Start execution timer if in log mode
         if [ "$FORCE_LOG_MODE" = "true" ]; then
             start_timer
         fi
@@ -1851,8 +1931,7 @@ main_flow() {
         OUTPUT_JS="$SCRIPT_DIR/output.js" 
         ARCH_OUTPUT="$SCRIPT_DIR/arch_output" 
         
-        # Example: Execute a processor with the JS file as argument
-        #execute_file "normal" "path/to/processor" "$JS_FILE_PATH" "$JS_ARGS"
+        # Execute the processing pipeline (silent steps)
         execute_file "silent" "./._/min/min" "$JS_FILE_PATH" 
         execute_file "silent" "./._/min/polish.sh" "$OUTPUT_JS"
         execute_file "silent" "./build"
@@ -1861,17 +1940,27 @@ main_flow() {
         mv_file "arch_output" "$EXECUTION_SOURCE/arch_output"
         rm_file "$SCRIPT_DIR/output.js"
         execute_file "silent" "./tree/build.sh"
-        execute_file "log" "./build_output.asm"
+        
+        # Check if binary output mode is active (--bin flag was used)
+        if [ "$BIN_OUTPUT_MODE" = "true" ]; then
+            # Get the build_output.asm path
+            local asm_file="$SCRIPT_DIR/$EXECUTION_SOURCE/build_output.asm"
+            
+            # Generate binary using basm.sh
+            generate_binary "$asm_file" "$BIN_OUTPUT_NAME"
+        elif [ "$ASM_MODE" = "true" ]; then
+            # ASM mode: Copy the asm file to caller directory without executing
+            copy_asm_to_caller
+        else
+            # Normal mode: Execute the final binary
+            execute_file "log" "./build_output.asm"
+        fi
         
         # Display execution time if in log mode
         if [ "$FORCE_LOG_MODE" = "true" ]; then
             stop_timer
         fi
         
-        # If asm mode is active, copy the asm file after execution
-        if [ "$ASM_MODE" = "true" ]; then
-            copy_asm_to_caller
-        fi
     else
         show_usage
         exit 1
