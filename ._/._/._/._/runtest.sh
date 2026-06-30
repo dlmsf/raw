@@ -1,8 +1,41 @@
 #!/usr/bin/env bash
 
 # runtest.sh - Run tests with generated JS files (fully recursive)
+# Usage:
+#   ./runtest.sh           # Normal execution (uses node if available, falls back to cached)
+#   ./runtest.sh --save    # Execute and save node outputs to .sh files
+#   ./runtest.sh --cached  # Force using saved outputs (no node required)
 
 set -e
+
+# Parse arguments
+SAVE_MODE=false
+CACHED_MODE=false
+AUTO_MODE=true
+
+for arg in "$@"; do
+    case "$arg" in
+        --save)
+            SAVE_MODE=true
+            AUTO_MODE=false
+            ;;
+        --cached)
+            CACHED_MODE=true
+            AUTO_MODE=false
+            ;;
+        *)
+            echo -e "\033[0;31m\033[1mError:\033[0m Unknown argument: $arg"
+            echo "Usage: $0 [--save | --cached]"
+            exit 1
+            ;;
+    esac
+done
+
+# Prevent using both --save and --cached simultaneously
+if [[ "$SAVE_MODE" == true ]] && [[ "$CACHED_MODE" == true ]]; then
+    echo -e "\033[0;31m\033[1mError:\033[0m Cannot use --save and --cached simultaneously"
+    exit 1
+fi
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,6 +43,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Define paths
 TESTS_DIR="${SCRIPT_DIR}/tests"
 DUAL_SCRIPT="${SCRIPT_DIR}/dual.sh"
+CACHE_DIR="${SCRIPT_DIR}/.test_cache"
+NODE_CACHE_DIR="${CACHE_DIR}/node_outputs"
 
 # Color definitions
 BOLD='\033[1m'
@@ -40,6 +75,58 @@ if [[ ! -d "$TESTS_DIR" ]]; then
     exit 1
 fi
 
+# Auto-detect mode based on node availability and cache existence
+NODE_AVAILABLE=false
+if command -v node &> /dev/null; then
+    NODE_AVAILABLE=true
+fi
+
+CACHE_AVAILABLE=false
+if [[ -d "$NODE_CACHE_DIR" ]] && [[ -n "$(ls -A "$NODE_CACHE_DIR" 2>/dev/null)" ]]; then
+    CACHE_AVAILABLE=true
+fi
+
+# Determine execution mode
+if [[ "$AUTO_MODE" == true ]]; then
+    if [[ "$NODE_AVAILABLE" == true ]]; then
+        # Node is available, use it normally
+        CACHED_MODE=false
+        echo -e "${GREEN}${BOLD}Node.js detected${RESET} - Running in ${GREEN}normal mode${RESET}"
+    elif [[ "$CACHE_AVAILABLE" == true ]]; then
+        # No node, but cache exists - use cached mode
+        CACHED_MODE=true
+        echo -e "${YELLOW}${BOLD}Node.js not found${RESET} - ${CYAN}Automatically falling back to cached mode${RESET}"
+    else
+        echo -e "${RED}${BOLD}Error:${RESET} Node.js is not installed and no cache found."
+        echo -e "${YELLOW}Options:${RESET}"
+        echo -e "  1. Install Node.js to run tests normally"
+        echo -e "  2. Run on a system with Node.js using ${BOLD}--save${RESET} to generate cache"
+        echo -e "  3. Copy the ${BOLD}.test_cache${RESET} directory from another system"
+        exit 1
+    fi
+elif [[ "$CACHED_MODE" == true ]]; then
+    if [[ "$CACHE_AVAILABLE" == false ]]; then
+        echo -e "${RED}${BOLD}Error:${RESET} --cached mode requested but no cache found at ${NODE_CACHE_DIR}"
+        echo -e "${YELLOW}Run with --save first (on a system with Node.js) to generate cache files${RESET}"
+        exit 1
+    fi
+    echo -e "${CYAN}${BOLD}Forced cached mode${RESET} - Using pre-saved outputs"
+elif [[ "$SAVE_MODE" == true ]]; then
+    if [[ "$NODE_AVAILABLE" == false ]]; then
+        echo -e "${RED}${BOLD}Error:${RESET} --save mode requires Node.js to be installed"
+        exit 1
+    fi
+    echo -e "${YELLOW}${BOLD}Save mode${RESET} - Will cache all node outputs"
+fi
+
+# Create cache directories if in save mode
+if [[ "$SAVE_MODE" == true ]]; then
+    mkdir -p "$NODE_CACHE_DIR"
+    echo -e "${CYAN}${BOLD}Cache directory:${RESET} ${NODE_CACHE_DIR}"
+fi
+
+echo ""
+
 # Arrays to track test results (associative by group path)
 declare -A passed_tests
 declare -A failed_tests
@@ -55,6 +142,85 @@ get_group_name() {
     else
         echo "$rel_path"
     fi
+}
+
+# Function to get cache file path for a specific JS file
+get_node_cache_file() {
+    local js_file="$1"
+    local js_basename=$(basename "$js_file" .js)
+    local js_dir=$(dirname "$js_file")
+    local rel_path="${js_dir#$TESTS_DIR}"
+    rel_path="${rel_path#/}"
+    
+    if [[ -z "$rel_path" ]]; then
+        echo "${NODE_CACHE_DIR}/${js_basename}.sh"
+    else
+        local flat_path="${rel_path//\//_}"
+        mkdir -p "${NODE_CACHE_DIR}/${flat_path}" 2>/dev/null || true
+        echo "${NODE_CACHE_DIR}/${flat_path}/${js_basename}.sh"
+    fi
+}
+
+# Function to create a temporary node wrapper that returns cached output
+create_node_wrapper() {
+    local js_file="$1"
+    local cache_file="$2"
+    local wrapper_script=$(mktemp)
+    
+    cat > "$wrapper_script" << WRAPPEREOF
+#!/usr/bin/env bash
+# Node wrapper for cached execution
+# Returns pre-captured output for: ${js_file}
+
+if echo "\$@" | grep -q "$(basename "${js_file}")"; then
+    # Execute the cached .sh file to get the output
+    bash "${cache_file}"
+    exit \$?
+else
+    # If it's a different file, use real node (if available)
+    if command -v node &> /dev/null; then
+        $(command -v node) "\$@"
+    else
+        echo "Error: node not available and no cache for this file" >&2
+        exit 1
+    fi
+fi
+WRAPPEREOF
+
+    chmod +x "$wrapper_script"
+    echo "$wrapper_script"
+}
+
+# Function to save node output as executable .sh file
+save_node_output() {
+    local js_file="$1"
+    local cache_file="$2"
+    
+    # Capture the actual output from running node on the JS file
+    local node_output
+    node_output=$(node "$js_file" 2>&1) || true
+    local node_exit=$?
+    
+    # Create an executable .sh file that outputs the captured content
+    {
+        echo "#!/usr/bin/env bash"
+        echo "# Cached node output - Generated by runtest.sh --save"
+        echo "# Original file: ${js_file}"
+        echo "# Generated at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+        echo ""
+        echo "# This file contains pre-captured node output"
+        echo "# Execute it to get the same output as running: node ${js_file}"
+        echo ""
+        echo "cat << 'NODEOUTPUT'"
+        echo "$node_output"
+        echo "NODEOUTPUT"
+        echo ""
+        echo "exit ${node_exit}"
+    } > "$cache_file"
+    
+    chmod +x "$cache_file"
+    
+    echo -e "${GREEN}✓ Node output saved to:${RESET} ${cache_file}"
 }
 
 # Function to process a test directory recursively
@@ -74,37 +240,51 @@ process_test_directory() {
         has_content=true
         
         if [[ "$group_name" != "general" ]] || [[ -n "$sh_files" ]]; then
-            echo -e "${BG_BLUE}${WHITE}${BOLD} Processing test group: ${group_name} ${RESET}"
+            if [[ "$SAVE_MODE" == true ]]; then
+                echo -e "${BG_BLUE}${WHITE}${BOLD} Processing test group: ${group_name} ${RESET} ${YELLOW}[SAVE MODE]${RESET}"
+            elif [[ "$CACHED_MODE" == true ]]; then
+                echo -e "${BG_BLUE}${WHITE}${BOLD} Processing test group: ${group_name} ${RESET} ${CYAN}[CACHED MODE]${RESET}"
+            else
+                echo -e "${BG_BLUE}${WHITE}${BOLD} Processing test group: ${group_name} ${RESET}"
+            fi
             echo -e "${DIM}Directory: ${dir_path}${RESET}"
             echo ""
         fi
         
-        echo -e "${CYAN}${BOLD}Found test generator scripts:${RESET}"
-        echo "$sh_files"
-        echo ""
-        
-        # Execute each .sh file to generate corresponding .js files
-        for sh_file in $sh_files; do
-            echo -e "${MAGENTA}Executing generator:${RESET} ${BOLD}$sh_file${RESET}"
-            bash "$sh_file"
-            
-            test_num="${sh_file%.sh}"
-            
-            if [[ ! -f "${test_num}.js" ]]; then
-                echo -e "${YELLOW}${BOLD}Warning:${RESET} ${test_num}.js was not generated by ${sh_file}"
-            else
-                echo -e "${GREEN}Generated:${RESET} ${test_num}.js"
+        # Execute generators (skip in cached mode if not needed, but run if JS files don't exist)
+        if [[ "$CACHED_MODE" == false ]] || [[ ! -f "$(ls -1v *.js 2>/dev/null | head -1)" ]]; then
+            if [[ "$CACHED_MODE" == true ]]; then
+                echo -e "${CYAN}${BOLD}JS files not found, executing generators even in cached mode${RESET}"
             fi
+            echo -e "${CYAN}${BOLD}Found test generator scripts:${RESET}"
+            echo "$sh_files"
             echo ""
-        done
+            
+            # Execute each .sh file to generate corresponding .js files
+            for sh_file in $sh_files; do
+                echo -e "${MAGENTA}Executing generator:${RESET} ${BOLD}$sh_file${RESET}"
+                bash "$sh_file"
+                
+                test_num="${sh_file%.sh}"
+                
+                if [[ ! -f "${test_num}.js" ]]; then
+                    echo -e "${YELLOW}${BOLD}Warning:${RESET} ${test_num}.js was not generated by ${sh_file}"
+                else
+                    echo -e "${GREEN}Generated:${RESET} ${test_num}.js"
+                fi
+                echo ""
+            done
+        fi
         
         # Get all generated .js files sorted numerically
         js_files=$(ls -1v *.js 2>/dev/null | grep -E '^[0-9]+\.js$' || true)
         
         if [[ -n "$js_files" ]]; then
-            echo -e "${CYAN}${BOLD}Found test files:${RESET}"
-            echo "$js_files"
-            echo ""
+            if [[ "$CACHED_MODE" == false ]]; then
+                echo -e "${CYAN}${BOLD}Found test files:${RESET}"
+                echo "$js_files"
+                echo ""
+            fi
             
             # Execute dual.sh for each .js file in order
             for js_file in $js_files; do
@@ -112,23 +292,88 @@ process_test_directory() {
                 test_num="${js_file%.js}"
                 
                 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-                echo -e "${WHITE}${BOLD}Running test ${test_num} [${group_name}]:${RESET} dual.sh ${js_file}"
+                
+                if [[ "$CACHED_MODE" == true ]]; then
+                    echo -e "${WHITE}${BOLD}Running test ${test_num} [${group_name}]:${RESET} dual.sh ${js_file} ${CYAN}(cached)${RESET}"
+                elif [[ "$SAVE_MODE" == true ]]; then
+                    echo -e "${WHITE}${BOLD}Running test ${test_num} [${group_name}]:${RESET} dual.sh ${js_file} ${YELLOW}(saving)${RESET}"
+                else
+                    echo -e "${WHITE}${BOLD}Running test ${test_num} [${group_name}]:${RESET} dual.sh ${js_file}"
+                fi
+                
                 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
                 
-                if bash "$DUAL_SCRIPT" "$test_path"; then
-                    echo -e "${BG_GREEN}${WHITE}${BOLD} ✓ Test ${test_num} completed successfully ${RESET}"
-                    if [[ -z "${passed_tests[$group_name]}" ]]; then
-                        passed_tests["$group_name"]="${test_num}"
+                if [[ "$CACHED_MODE" == true ]]; then
+                    # Get the cache file for this JS file
+                    local node_cache_file=$(get_node_cache_file "$test_path")
+                    
+                    if [[ ! -f "$node_cache_file" ]]; then
+                        echo -e "${BG_RED}${WHITE}${BOLD} ✗ Cache file not found: ${node_cache_file} ${RESET}"
+                        echo -e "${YELLOW}Run with --save first to generate cache files${RESET}"
+                        if [[ -z "${failed_tests[$group_name]}" ]]; then
+                            failed_tests["$group_name"]="${test_num}"
+                        else
+                            failed_tests["$group_name"]="${failed_tests[$group_name]} ${test_num}"
+                        fi
                     else
-                        passed_tests["$group_name"]="${passed_tests[$group_name]} ${test_num}"
+                        # Create a temporary node wrapper that returns cached output
+                        local node_wrapper=$(create_node_wrapper "$test_path" "$node_cache_file")
+                        
+                        # Run dual.sh with PATH modified to use our node wrapper
+                        local wrapper_dir=$(dirname "$node_wrapper")
+                        local original_path="$PATH"
+                        export PATH="${wrapper_dir}:${PATH}"
+                        
+                        # Rename our wrapper to 'node' temporarily
+                        mv "$node_wrapper" "${wrapper_dir}/node"
+                        
+                        if bash "$DUAL_SCRIPT" "$test_path"; then
+                            exit_code=0
+                            echo -e "${BG_GREEN}${WHITE}${BOLD} ✓ Test ${test_num} completed successfully (cached) ${RESET}"
+                            if [[ -z "${passed_tests[$group_name]}" ]]; then
+                                passed_tests["$group_name"]="${test_num}"
+                            else
+                                passed_tests["$group_name"]="${passed_tests[$group_name]} ${test_num}"
+                            fi
+                        else
+                            exit_code=$?
+                            echo -e "${BG_RED}${WHITE}${BOLD} ✗ Test ${test_num} failed with exit code: ${exit_code} ${RESET}"
+                            if [[ -z "${failed_tests[$group_name]}" ]]; then
+                                failed_tests["$group_name"]="${test_num}"
+                            else
+                                failed_tests["$group_name"]="${failed_tests[$group_name]} ${test_num}"
+                            fi
+                        fi
+                        
+                        # Restore original PATH and cleanup
+                        export PATH="$original_path"
+                        rm -f "${wrapper_dir}/node"
                     fi
                 else
-                    exit_code=$?
-                    echo -e "${BG_RED}${WHITE}${BOLD} ✗ Test ${test_num} failed with exit code: ${exit_code} ${RESET}"
-                    if [[ -z "${failed_tests[$group_name]}" ]]; then
-                        failed_tests["$group_name"]="${test_num}"
+                    # Normal mode or save mode: execute dual.sh
+                    if bash "$DUAL_SCRIPT" "$test_path"; then
+                        exit_code=0
+                        echo -e "${BG_GREEN}${WHITE}${BOLD} ✓ Test ${test_num} completed successfully ${RESET}"
+                        if [[ -z "${passed_tests[$group_name]}" ]]; then
+                            passed_tests["$group_name"]="${test_num}"
+                        else
+                            passed_tests["$group_name"]="${passed_tests[$group_name]} ${test_num}"
+                        fi
                     else
-                        failed_tests["$group_name"]="${failed_tests[$group_name]} ${test_num}"
+                        exit_code=$?
+                        echo -e "${BG_RED}${WHITE}${BOLD} ✗ Test ${test_num} failed with exit code: ${exit_code} ${RESET}"
+                        if [[ -z "${failed_tests[$group_name]}" ]]; then
+                            failed_tests["$group_name"]="${test_num}"
+                        else
+                            failed_tests["$group_name"]="${failed_tests[$group_name]} ${test_num}"
+                        fi
+                    fi
+                    
+                    # Save node output if in save mode
+                    if [[ "$SAVE_MODE" == true ]]; then
+                        local node_cache_file=$(get_node_cache_file "$test_path")
+                        echo -e "${YELLOW}Saving node output to:${RESET} ${node_cache_file}"
+                        save_node_output "$test_path" "$node_cache_file"
                     fi
                 fi
                 echo ""
@@ -158,7 +403,19 @@ process_test_directory() {
     cd "$SCRIPT_DIR"
 }
 
+# Display mode information
 echo -e "${BG_CYAN}${WHITE}${BOLD} Starting test generation and execution phase ${RESET}"
+if [[ "$SAVE_MODE" == true ]]; then
+    echo -e "${YELLOW}${BOLD}Mode: SAVE${RESET} - Node outputs will be cached to ${NODE_CACHE_DIR}"
+elif [[ "$CACHED_MODE" == true ]]; then
+    if [[ "$AUTO_MODE" == true ]]; then
+        echo -e "${CYAN}${BOLD}Mode: AUTO (CACHED)${RESET} - Node.js not available, using cache from ${NODE_CACHE_DIR}"
+    else
+        echo -e "${CYAN}${BOLD}Mode: CACHED${RESET} - Using pre-saved outputs from ${NODE_CACHE_DIR}"
+    fi
+else
+    echo -e "${GREEN}${BOLD}Mode: NORMAL${RESET} - Using Node.js for execution"
+fi
 echo ""
 
 # Record overall start time
@@ -258,6 +515,19 @@ elif (( elapsed_ns >= 1000000 )); then
 else
     elapsed_us=$(echo "scale=2; $elapsed_ns / 1000" | bc)
     echo -e "${BOLD}Total execution time:${RESET} ${elapsed_us}µs"
+fi
+
+# Display execution mode summary
+echo ""
+if [[ "$SAVE_MODE" == true ]]; then
+    echo -e "${YELLOW}${BOLD}Node outputs cached as .sh files in:${RESET} ${NODE_CACHE_DIR}"
+    echo -e "${DIM}Cache can be used on systems without Node.js${RESET}"
+elif [[ "$CACHED_MODE" == true ]]; then
+    echo -e "${CYAN}${BOLD}Execution mode: CACHED${RESET} - Node.js was not required"
+    echo -e "${DIM}To update cache, run with --save on a system with Node.js${RESET}"
+else
+    echo -e "${GREEN}${BOLD}Execution mode: NORMAL${RESET} - Node.js was used for all tests"
+    echo -e "${DIM}Use --save to create cache for Node.js-less systems${RESET}"
 fi
 
 # Exit with non-zero if any tests failed
