@@ -962,6 +962,8 @@ handle_reset() {
 
 # Handle --test mode
 handle_test() {
+    local test_args="$@"
+    
     echo -e "${YELLOW}Running test mode...${NC}"
     
     # First reset (delete and rebuild dev)
@@ -985,9 +987,15 @@ handle_test() {
     # Make it executable
     chmod +x "$test_script" 2>/dev/null
     
-    # Execute with bash
-    echo -e "${GREEN}Running test script...${NC}"
-    bash "$test_script"
+    # Execute with bash, passing any additional arguments
+    if [ -n "$test_args" ]; then
+        echo -e "${GREEN}Running test script with arguments: $test_args${NC}"
+        bash "$test_script" $test_args
+    else
+        echo -e "${GREEN}Running test script...${NC}"
+        bash "$test_script"
+    fi
+    
     local test_result=$?
     
     if [ $test_result -eq 0 ]; then
@@ -1807,8 +1815,8 @@ main_flow() {
     if [ "$SPECIAL_MODE" = "--reset" ]; then
         handle_reset
         exit $?
-    elif [ "$SPECIAL_MODE" = "--test" ]; then
-        handle_test
+     elif [ "$SPECIAL_MODE" = "--test" ]; then
+        handle_test "$@"
         exit $?
     fi
     
