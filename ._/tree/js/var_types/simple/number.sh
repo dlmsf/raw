@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # number.sh - Converts JavaScript number declarations to NASM assembly code
-# Generates runtime evaluation code for expressions including floats and nested parentheses
-# ALL type information is embedded as runtime _type tags
+# Rewritten to support variables in expressions. All evaluation happens at assembly runtime.
+# Variables from previous declarations are recognized and loaded appropriately.
 
 set -x  # Debug: show commands being executed
 
@@ -36,31 +36,24 @@ fi
 echo "DEBUG: VAR_NAME='$VAR_NAME', VAR_VALUE='$VAR_VALUE'" >&2
 
 # ----------------------------------------------------------------------
-# Detect if expression contains any operators or parentheses
+# Load existing variable types from build_output.asm
 # ----------------------------------------------------------------------
-has_operators() {
-    local expr="$1"
-    if [[ "$expr" =~ [+*/().%-] ]]; then
-        return 0
-    else
-        return 1
-    fi
+declare -A VAR_TYPE
+
+load_variable_types() {
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)_type[[:space:]]+dq[[:space:]]+TYPE_FLOAT ]]; then
+            VAR_TYPE["${BASH_REMATCH[1]}"]="float"
+        elif [[ "$line" =~ ^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)_type[[:space:]]+dq[[:space:]]+TYPE_NUMBER ]]; then
+            VAR_TYPE["${BASH_REMATCH[1]}"]="int"
+        fi
+    done < <(grep -E '^\s*[a-zA-Z_][a-zA-Z0-9_]*_type\s+dq\s+TYPE_(FLOAT|NUMBER)' "$OUTPUT_FILE" 2>/dev/null || true)
 }
 
-# ----------------------------------------------------------------------
-# Detect if expression needs float (contains decimal point, scientific notation, or division)
-# ----------------------------------------------------------------------
-contains_float() {
-    local expr="$1"
-    if [[ "$expr" =~ [0-9]*\.[0-9]+ ]] || [[ "$expr" =~ [0-9]+[eE][-+]?[0-9]+ ]] || [[ "$expr" =~ / ]]; then
-        return 0
-    else
-        return 1
-    fi
-}
+load_variable_types
 
 # ----------------------------------------------------------------------
-# Tokenizer - handles integers, floats, and parentheses
+# Tokenizer - handles integers, floats, variables, and parentheses
 # ----------------------------------------------------------------------
 tokenize() {
     local expr="$1"
@@ -116,6 +109,30 @@ tokenize() {
             continue
         fi
         
+        # Variable / identifier
+        if [[ "$c" =~ [a-zA-Z_] ]]; then
+            local name="$c"
+            i=$((i+1))
+            while [ $i -lt $len ]; do
+                local nc="${expr:$i:1}"
+                if [[ "$nc" =~ [a-zA-Z0-9_] ]]; then
+                    name="${name}${nc}"
+                    i=$((i+1))
+                else
+                    break
+                fi
+            done
+            # Disallow reserved words that might appear in expressions
+            case "$name" in
+                var|let|const|if|else|while|for|function|return)
+                    echo "Error: Unexpected keyword '$name' in expression" >&2
+                    exit 1
+                    ;;
+            esac
+            tokens+=("VAR:$name")
+            continue
+        fi
+        
         # Operators and parentheses
         case "$c" in
             '+'|'-'|'*'|'/'|'%'|'('|')')
@@ -133,7 +150,7 @@ tokenize() {
 }
 
 # ----------------------------------------------------------------------
-# Shunting-yard algorithm - infix to postfix (RPN) with full parentheses support
+# Shunting-yard algorithm - infix to postfix (RPN)
 # ----------------------------------------------------------------------
 precedence() {
     case "$1" in
@@ -152,7 +169,7 @@ to_rpn() {
         local type="${token%%:*}"
         local val="${token#*:}"
         
-        if [ "$type" = "INT" ] || [ "$type" = "FLOAT" ]; then
+        if [ "$type" = "INT" ] || [ "$type" = "FLOAT" ] || [ "$type" = "VAR" ]; then
             output+=("$token")
         elif [ "$type" = "OP" ]; then
             case "$val" in
@@ -192,7 +209,29 @@ to_rpn() {
 }
 
 # ----------------------------------------------------------------------
-# Generate assembly code from RPN tokens - ALL IN ONE FUNCTION
+# Determine if expression must be evaluated as float
+# ----------------------------------------------------------------------
+is_float_expression() {
+    local tokens=("$@")
+    for token in "${tokens[@]}"; do
+        local type="${token%%:*}"
+        local val="${token#*:}"
+        if [ "$type" = "FLOAT" ]; then return 0; fi
+        if [ "$type" = "OP" ] && [ "$val" = "/" ]; then return 0; fi
+        if [ "$type" = "VAR" ]; then
+            local vtype="${VAR_TYPE[$val]}"
+            if [ "$vtype" = "float" ]; then return 0; fi
+            if [ -z "$vtype" ]; then
+                echo "Error: Variable '$val' used before declaration" >&2
+                exit 1
+            fi
+        fi
+    done
+    return 1
+}
+
+# ----------------------------------------------------------------------
+# Generate assembly code from RPN tokens (handles variables)
 # ----------------------------------------------------------------------
 generate_full_asm() {
     local use_float=$1
@@ -200,7 +239,7 @@ generate_full_asm() {
     local rpn_tokens=("$@")
     local const_idx=0
     
-    # Generate data section
+    # Data section
     echo "    ; ========================================="
     echo "    ; Variable: $VAR_NAME"
     echo "    ; Expression: $VAR_VALUE"
@@ -208,8 +247,6 @@ generate_full_asm() {
     if [ "$use_float" = true ]; then
         echo "    ; Type: FLOAT (runtime evaluated)"
         echo "    ; ========================================="
-        
-        # Generate float constants
         for token in "${rpn_tokens[@]}"; do
             if [[ "$token" == FLOAT:* ]]; then
                 local val="${token#*:}"
@@ -218,7 +255,6 @@ generate_full_asm() {
                 const_idx=$((const_idx+1))
             fi
         done
-        
         echo "    ${VAR_NAME}_float_val dq 0    ; Storage for float result"
         echo "    ${VAR_NAME}_str times 32 db 0    ; Per-variable string buffer"
         echo "    ${VAR_NAME} dq ${VAR_NAME}_str    ; Pointer for printing"
@@ -230,16 +266,14 @@ generate_full_asm() {
         echo "    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"
     fi
     
-    # Separator between data and code
     echo ""
     echo "DATA_CODE_SEPARATOR"
     echo ""
     
-    # Generate code section
+    # Code section
     echo "    ; ========================================="
     echo "    ; Runtime evaluation of: $VAR_VALUE"
     echo "    ; Variable: $VAR_NAME"
-    
     if [ "$use_float" = true ]; then
         echo "    ; Type: FLOAT (using x87 FPU)"
     else
@@ -247,9 +281,7 @@ generate_full_asm() {
     fi
     echo "    ; ========================================="
     
-    # Reset const_idx for code generation
     const_idx=0
-    
     for token in "${rpn_tokens[@]}"; do
         local type="${token%%:*}"
         local val="${token#*:}"
@@ -268,6 +300,29 @@ generate_full_asm() {
             echo "    ; Load float constant ${VAR_NAME}_float${const_idx}"
             echo "    fld dword [${VAR_NAME}_float${const_idx}]"
             const_idx=$((const_idx+1))
+        elif [ "$type" = "VAR" ]; then
+            local var="$val"
+            local vtype="${VAR_TYPE[$var]}"
+            if [ -z "$vtype" ]; then
+                echo "Error: Variable '$var' not defined" >&2
+                exit 1
+            fi
+            if [ "$use_float" = true ]; then
+                if [ "$vtype" = "float" ]; then
+                    echo "    ; Load float variable $var"
+                    echo "    fld qword [${var}_float_val]"
+                else
+                    echo "    ; Load integer variable $var and convert to float"
+                    echo "    fild qword [${var}]"
+                fi
+            else
+                if [ "$vtype" != "int" ]; then
+                    echo "Error: Variable '$var' is not an integer (cannot mix types in integer expression)" >&2
+                    exit 1
+                fi
+                echo "    ; Push integer variable $var"
+                echo "    push qword [${var}]"
+            fi
         elif [ "$type" = "OP" ]; then
             if [ "$use_float" = true ]; then
                 case "$val" in
@@ -340,82 +395,89 @@ generate_full_asm() {
 }
 
 # ----------------------------------------------------------------------
-# Main logic - Determine variable type and generate appropriate code
+# Main logic
 # ----------------------------------------------------------------------
 DATA_SECTION=""
 CODE_SECTION=""
 IS_FLOAT=false
 FULL_OUTPUT=""
 
-# CHECK FOR OPERATORS FIRST (runtime evaluation needed)
-if has_operators "$VAR_VALUE"; then
-    echo "DEBUG: Expression contains operators, generating runtime evaluation code" >&2
-    
+# 1) Handle hex/binary/octal literals directly (they are always integer)
+if [[ "$VAR_VALUE" =~ ^-?0[xX][0-9a-fA-F]+$ ]] || \
+   [[ "$VAR_VALUE" =~ ^-?0[bB][01]+$ ]] || \
+   [[ "$VAR_VALUE" =~ ^-?0[0-7]+$ ]]; then
+    echo "DEBUG: Non-decimal literal detected" >&2
+    DATA_SECTION="    ; ========================================="$'\n'
+    DATA_SECTION+="    ; Variable: $VAR_NAME = $VAR_VALUE"$'\n'
+    DATA_SECTION+="    ; Type: INTEGER (literal)"$'\n'
+    DATA_SECTION+="    ; ========================================="$'\n'
+    DATA_SECTION+="    ${VAR_NAME} dq $VAR_VALUE"$'\n'
+    DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"
+
+# 2) Tokenize and decide
+else
     mapfile -t tokens < <(tokenize "$VAR_VALUE")
     echo "DEBUG: Tokens: ${tokens[*]}" >&2
-    
-    mapfile -t rpn_tokens < <(to_rpn "${tokens[@]}")
-    echo "DEBUG: RPN: ${rpn_tokens[*]}" >&2
-    
-    if contains_float "$VAR_VALUE"; then
-        IS_FLOAT=true
-        FULL_OUTPUT=$(generate_full_asm true "${rpn_tokens[@]}")
-    else
-        IS_FLOAT=false
-        FULL_OUTPUT=$(generate_full_asm false "${rpn_tokens[@]}")
+
+    # Single literal (int/float)
+    if [ ${#tokens[@]} -eq 1 ]; then
+        token="${tokens[0]}"
+        ttype="${token%%:*}"
+        tval="${token#*:}"
+        if [ "$ttype" = "FLOAT" ]; then
+            echo "DEBUG: Float literal detected" >&2
+            IS_FLOAT=true
+            FLOAT_VAL=$(printf "%.10f" "$tval" 2>/dev/null | sed 's/\.0*$//' || echo "$tval")
+            DATA_SECTION="    ; ========================================="$'\n'
+            DATA_SECTION+="    ; Variable: $VAR_NAME = $tval"$'\n'
+            DATA_SECTION+="    ; Type: FLOAT (literal)"$'\n'
+            DATA_SECTION+="    ; ========================================="$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_float_val dq 0    ; Storage for float value"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_float dd $FLOAT_VAL    ; The actual float constant"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_float_str db '$FLOAT_VAL', 0    ; String representation"$'\n'
+            DATA_SECTION+="    ${VAR_NAME} dq ${VAR_NAME}_float_str    ; Pointer for printing"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_FLOAT    ; RUNTIME TYPE TAG"$'\n'
+            CODE_SECTION="    ; Initialize float value at runtime"$'\n'
+            CODE_SECTION+="    fld dword [${VAR_NAME}_float]"$'\n'
+            CODE_SECTION+="    fstp qword [${VAR_NAME}_float_val]"
+        elif [ "$ttype" = "INT" ]; then
+            echo "DEBUG: Integer literal detected" >&2
+            DATA_SECTION="    ; ========================================="$'\n'
+            DATA_SECTION+="    ; Variable: $VAR_NAME = $tval"$'\n'
+            DATA_SECTION+="    ; Type: INTEGER (literal)"$'\n'
+            DATA_SECTION+="    ; ========================================="$'\n'
+            DATA_SECTION+="    ${VAR_NAME} dq $tval"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"
+        else
+            # Single variable (assignment)
+            echo "DEBUG: Assignment from variable '$tval'" >&2
+            # Fall through to expression handling
+            EXPRESSION=true
+        fi
     fi
-    
-    # Split the output at the separator
-    DATA_SECTION=$(echo "$FULL_OUTPUT" | sed -n '1,/DATA_CODE_SEPARATOR/p' | head -n -1)
-    CODE_SECTION=$(echo "$FULL_OUTPUT" | sed -n '/DATA_CODE_SEPARATOR/,$p' | tail -n +2)
 
-# HANDLE HEX, BINARY, OCTAL LITERALS
-elif [[ "$VAR_VALUE" =~ ^-?0[xX][0-9a-fA-F]+$ ]] || \
-     [[ "$VAR_VALUE" =~ ^-?0[bB][01]+$ ]] || \
-     [[ "$VAR_VALUE" =~ ^-?0[0-7]+$ ]]; then
-    echo "DEBUG: Non-decimal literal detected" >&2
-    
-    DATA_SECTION="    ; ========================================="$'\n'
-    DATA_SECTION+="    ; Variable: $VAR_NAME = $VAR_VALUE"$'\n'
-    DATA_SECTION+="    ; Type: INTEGER (literal)"$'\n'
-    DATA_SECTION+="    ; ========================================="$'\n'
-    DATA_SECTION+="    ${VAR_NAME} dq $VAR_VALUE"$'\n'
-    DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"
+    # If not a simple literal, treat as expression
+    if [ -z "$DATA_SECTION" ]; then
+        echo "DEBUG: Expression detected, generating runtime evaluation" >&2
+        mapfile -t rpn_tokens < <(to_rpn "${tokens[@]}")
+        echo "DEBUG: RPN: ${rpn_tokens[*]}" >&2
 
-# HANDLE FLOAT LITERALS
-elif [[ "$VAR_VALUE" =~ ^-?[0-9]*\.[0-9]+$ ]] || [[ "$VAR_VALUE" =~ ^-?[0-9]+[eE][-+]?[0-9]+$ ]]; then
-    echo "DEBUG: Float literal detected" >&2
-    IS_FLOAT=true
-    FLOAT_VAL=$(printf "%.10f" "$VAR_VALUE" 2>/dev/null | sed 's/\.0*$//' || echo "$VAR_VALUE")
-    
-    DATA_SECTION="    ; ========================================="$'\n'
-    DATA_SECTION+="    ; Variable: $VAR_NAME = $VAR_VALUE"$'\n'
-    DATA_SECTION+="    ; Type: FLOAT (literal)"$'\n'
-    DATA_SECTION+="    ; ========================================="$'\n'
-    DATA_SECTION+="    ${VAR_NAME}_float_val dq 0    ; Storage for float value"$'\n'
-    DATA_SECTION+="    ${VAR_NAME}_float dd $FLOAT_VAL    ; The actual float constant"$'\n'
-    DATA_SECTION+="    ${VAR_NAME}_float_str db '$FLOAT_VAL', 0    ; String representation"$'\n'
-    DATA_SECTION+="    ${VAR_NAME} dq ${VAR_NAME}_float_str    ; Pointer for printing"$'\n'
-    DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_FLOAT    ; RUNTIME TYPE TAG"$'\n'
-    
-    CODE_SECTION="    ; Initialize float value at runtime"$'\n'
-    CODE_SECTION+="    fld dword [${VAR_NAME}_float]"$'\n'
-    CODE_SECTION+="    fstp qword [${VAR_NAME}_float_val]"
+        if is_float_expression "${tokens[@]}"; then
+            IS_FLOAT=true
+            FULL_OUTPUT=$(generate_full_asm true "${rpn_tokens[@]}")
+        else
+            IS_FLOAT=false
+            FULL_OUTPUT=$(generate_full_asm false "${rpn_tokens[@]}")
+        fi
 
-# HANDLE INTEGER LITERALS (default case)
-else
-    echo "DEBUG: Integer literal detected" >&2
-    
-    DATA_SECTION="    ; ========================================="$'\n'
-    DATA_SECTION+="    ; Variable: $VAR_NAME = $VAR_VALUE"$'\n'
-    DATA_SECTION+="    ; Type: INTEGER (literal)"$'\n'
-    DATA_SECTION+="    ; ========================================="$'\n'
-    DATA_SECTION+="    ${VAR_NAME} dq $VAR_VALUE"$'\n'
-    DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"
+        # Split at separator
+        DATA_SECTION=$(echo "$FULL_OUTPUT" | sed -n '1,/DATA_CODE_SEPARATOR/p' | head -n -1)
+        CODE_SECTION=$(echo "$FULL_OUTPUT" | sed -n '/DATA_CODE_SEPARATOR/,$p' | tail -n +2)
+    fi
 fi
 
 # ----------------------------------------------------------------------
-# Insert into build_output.asm with type tag support
+# Insert into build_output.asm
 # ----------------------------------------------------------------------
 echo "DEBUG: Inserting data section and code section into $OUTPUT_FILE" >&2
 
@@ -426,7 +488,6 @@ DATA_DONE=0
 CODE_DONE=0
 
 while IFS= read -r line; do
-    # Track which section we're in
     if [[ "$line" == "section .data" ]]; then
         IN_DATA=1
     elif [[ "$line" == section* ]] && [ "$IN_DATA" -eq 1 ]; then
@@ -436,24 +497,21 @@ while IFS= read -r line; do
         fi
         IN_DATA=0
     fi
-    
-    # Track when we enter _start
+
     if [[ "$line" == "_start:" ]]; then
         IN_START=1
     fi
-    
-    # Insert code before the exit syscall
+
     if [ "$IN_START" -eq 1 ] && [ "$CODE_DONE" -eq 0 ] && \
        [[ "$line" =~ ^[[:space:]]*mov[[:space:]]+rax,[[:space:]]*60 ]] && \
        [ -n "$CODE_SECTION" ]; then
         echo "$CODE_SECTION" >> "$TEMP_FILE"
         CODE_DONE=1
     fi
-    
+
     echo "$line" >> "$TEMP_FILE"
 done < "$OUTPUT_FILE"
 
-# Handle edge cases where sections weren't found
 if [ "$IN_DATA" -eq 1 ] && [ "$DATA_DONE" -eq 0 ] && [ -n "$DATA_SECTION" ]; then
     echo "$DATA_SECTION" >> "$TEMP_FILE"
 fi
@@ -464,7 +522,7 @@ fi
 
 mv "$TEMP_FILE" "$OUTPUT_FILE"
 
-# Final status message
+# Final status
 if [ "$IS_FLOAT" = true ]; then
     echo "✓ Successfully added float variable: $VAR_NAME = $VAR_VALUE"
     echo "  - Runtime type tag: TYPE_FLOAT"
@@ -472,7 +530,7 @@ if [ "$IS_FLOAT" = true ]; then
 else
     echo "✓ Successfully added integer variable: $VAR_NAME = $VAR_VALUE"
     echo "  - Runtime type tag: TYPE_NUMBER"
-    if has_operators "$VAR_VALUE"; then
+    if [ -n "$rpn_tokens" ]; then
         echo "  - Expression evaluated at assembly runtime"
     else
         echo "  - Literal value stored directly"
