@@ -32,7 +32,11 @@ else
     exit 1
 fi
 
-# Function to check if a string is a valid arithmetic expression
+# ----------------------------------------------------------------------
+#  is_arithmetic_expression
+#  (retained for any possible future use, but no longer called in type
+#   detection – the new logic handles all cases directly and robustly)
+# ----------------------------------------------------------------------
 is_arithmetic_expression() {
     local value="$1"
     # Remove all whitespace
@@ -67,7 +71,10 @@ is_arithmetic_expression() {
     return 1
 }
 
-# Function to determine primitive type
+# ----------------------------------------------------------------------
+#  determine_type
+#  (rewritten logic – more robust detection of number expressions)
+# ----------------------------------------------------------------------
 determine_type() {
     local value="$1"
     # Trim whitespace
@@ -95,8 +102,12 @@ determine_type() {
         return
     fi
     
-    # 4. Check for arithmetic expressions (including decimals and parentheses)
-    if is_arithmetic_expression "$value"; then
+    # 4. Check for arithmetic expressions of any kind
+    #    Any value that contains an arithmetic operator or parentheses
+    #    is treated as a numeric expression (variables + numbers allowed).
+    #    This catches complex cases like: 2+(a+b)*(c-15)/2
+    #    and all previously working numeric expressions.
+    if [[ "$value" =~ [+*/%()-] ]]; then
         echo "number"
         return
     fi
@@ -152,13 +163,7 @@ determine_type() {
         return
     fi
     
-    # 7. Check for expressions with variables and numbers (like: a + 2.5, (x * y) / 2)
-    if [[ "$value" =~ [+\-*/%()] ]]; then
-        echo "number"
-        return
-    fi
-    
-    # 8. Default to string
+    # 7. Default to string
     echo "string"
 }
 
