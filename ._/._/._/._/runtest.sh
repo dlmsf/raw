@@ -4,12 +4,14 @@
 # Usage:
 #   ./runtest.sh           # Normal execution (uses node if available, falls back to cached)
 #   ./runtest.sh --save    # Execute and save node outputs to .sh files
+#   ./runtest.sh --saveforce # Execute and force overwrite saved node outputs
 #   ./runtest.sh --cached  # Force using saved outputs (no node required)
 
 set -e
 
 # Parse arguments
 SAVE_MODE=false
+SAVEFORCE_MODE=false
 CACHED_MODE=false
 AUTO_MODE=true
 
@@ -19,13 +21,17 @@ for arg in "$@"; do
             SAVE_MODE=true
             AUTO_MODE=false
             ;;
+        --saveforce)
+            SAVEFORCE_MODE=true
+            AUTO_MODE=false
+            ;;
         --cached)
             CACHED_MODE=true
             AUTO_MODE=false
             ;;
         *)
             echo -e "\033[0;31m\033[1mError:\033[0m Unknown argument: $arg"
-            echo "Usage: $0 [--save | --cached]"
+            echo "Usage: $0 [--save | --saveforce | --cached]"
             exit 1
             ;;
     esac
@@ -34,6 +40,16 @@ done
 # Prevent using both --save and --cached simultaneously
 if [[ "$SAVE_MODE" == true ]] && [[ "$CACHED_MODE" == true ]]; then
     echo -e "\033[0;31m\033[1mError:\033[0m Cannot use --save and --cached simultaneously"
+    exit 1
+fi
+
+if [[ "$SAVEFORCE_MODE" == true ]] && [[ "$CACHED_MODE" == true ]]; then
+    echo -e "\033[0;31m\033[1mError:\033[0m Cannot use --saveforce and --cached simultaneously"
+    exit 1
+fi
+
+if [[ "$SAVE_MODE" == true ]] && [[ "$SAVEFORCE_MODE" == true ]]; then
+    echo -e "\033[0;31m\033[1mError:\033[0m Cannot use --save and --saveforce simultaneously"
     exit 1
 fi
 
@@ -117,10 +133,16 @@ elif [[ "$SAVE_MODE" == true ]]; then
         exit 1
     fi
     echo -e "${YELLOW}${BOLD}Save mode${RESET} - Will cache all node outputs"
+elif [[ "$SAVEFORCE_MODE" == true ]]; then
+    if [[ "$NODE_AVAILABLE" == false ]]; then
+        echo -e "${RED}${BOLD}Error:${RESET} --saveforce mode requires Node.js to be installed"
+        exit 1
+    fi
+    echo -e "${YELLOW}${BOLD}Save force mode${RESET} - Will cache all node outputs (overwriting existing files)"
 fi
 
 # Create cache directories if in save mode
-if [[ "$SAVE_MODE" == true ]]; then
+if [[ "$SAVE_MODE" == true ]] || [[ "$SAVEFORCE_MODE" == true ]]; then
     mkdir -p "$NODE_CACHE_DIR"
     echo -e "${CYAN}${BOLD}Cache directory:${RESET} ${NODE_CACHE_DIR}"
 fi
@@ -179,7 +201,7 @@ if echo "\$@" | grep -q "$(basename "${js_file}")"; then
 else
     # If it's a different file, use real node (if available)
     if command -v node &> /dev/null; then
-        $(command -v node) "\$@"
+        \$(command -v node) "\$@"
     else
         echo "Error: node not available and no cache for this file" >&2
         exit 1
@@ -195,6 +217,12 @@ WRAPPEREOF
 save_node_output() {
     local js_file="$1"
     local cache_file="$2"
+    
+    # If in --save mode (not --saveforce) and the cache file already exists, skip it
+    if [[ "$SAVEFORCE_MODE" != true ]] && [[ -f "$cache_file" ]]; then
+        echo -e "${DIM}Cache file already exists, skipping:${RESET} ${cache_file}"
+        return
+    fi
     
     # Capture the actual output from running node on the JS file
     local node_output
@@ -220,7 +248,11 @@ save_node_output() {
     
     chmod +x "$cache_file"
     
-    echo -e "${GREEN}✓ Node output saved to:${RESET} ${cache_file}"
+    if [[ "$SAVEFORCE_MODE" == true ]]; then
+        echo -e "${GREEN}✓ Node output saved (overwritten):${RESET} ${cache_file}"
+    else
+        echo -e "${GREEN}✓ Node output saved:${RESET} ${cache_file}"
+    fi
 }
 
 # Function to process a test directory recursively
@@ -242,6 +274,8 @@ process_test_directory() {
         if [[ "$group_name" != "general" ]] || [[ -n "$sh_files" ]]; then
             if [[ "$SAVE_MODE" == true ]]; then
                 echo -e "${BG_BLUE}${WHITE}${BOLD} Processing test group: ${group_name} ${RESET} ${YELLOW}[SAVE MODE]${RESET}"
+            elif [[ "$SAVEFORCE_MODE" == true ]]; then
+                echo -e "${BG_BLUE}${WHITE}${BOLD} Processing test group: ${group_name} ${RESET} ${YELLOW}[SAVE FORCE MODE]${RESET}"
             elif [[ "$CACHED_MODE" == true ]]; then
                 echo -e "${BG_BLUE}${WHITE}${BOLD} Processing test group: ${group_name} ${RESET} ${CYAN}[CACHED MODE]${RESET}"
             else
@@ -297,6 +331,8 @@ process_test_directory() {
                     echo -e "${WHITE}${BOLD}Running test ${test_num} [${group_name}]:${RESET} dual.sh ${js_file} ${CYAN}(cached)${RESET}"
                 elif [[ "$SAVE_MODE" == true ]]; then
                     echo -e "${WHITE}${BOLD}Running test ${test_num} [${group_name}]:${RESET} dual.sh ${js_file} ${YELLOW}(saving)${RESET}"
+                elif [[ "$SAVEFORCE_MODE" == true ]]; then
+                    echo -e "${WHITE}${BOLD}Running test ${test_num} [${group_name}]:${RESET} dual.sh ${js_file} ${YELLOW}(saving force)${RESET}"
                 else
                     echo -e "${WHITE}${BOLD}Running test ${test_num} [${group_name}]:${RESET} dual.sh ${js_file}"
                 fi
@@ -370,7 +406,7 @@ process_test_directory() {
                     fi
                     
                     # Save node output if in save mode
-                    if [[ "$SAVE_MODE" == true ]]; then
+                    if [[ "$SAVE_MODE" == true ]] || [[ "$SAVEFORCE_MODE" == true ]]; then
                         local node_cache_file=$(get_node_cache_file "$test_path")
                         echo -e "${YELLOW}Saving node output to:${RESET} ${node_cache_file}"
                         save_node_output "$test_path" "$node_cache_file"
@@ -407,6 +443,8 @@ process_test_directory() {
 echo -e "${BG_CYAN}${WHITE}${BOLD} Starting test generation and execution phase ${RESET}"
 if [[ "$SAVE_MODE" == true ]]; then
     echo -e "${YELLOW}${BOLD}Mode: SAVE${RESET} - Node outputs will be cached to ${NODE_CACHE_DIR}"
+elif [[ "$SAVEFORCE_MODE" == true ]]; then
+    echo -e "${YELLOW}${BOLD}Mode: SAVE FORCE${RESET} - Node outputs will be cached (overwriting existing) to ${NODE_CACHE_DIR}"
 elif [[ "$CACHED_MODE" == true ]]; then
     if [[ "$AUTO_MODE" == true ]]; then
         echo -e "${CYAN}${BOLD}Mode: AUTO (CACHED)${RESET} - Node.js not available, using cache from ${NODE_CACHE_DIR}"
@@ -521,6 +559,9 @@ fi
 echo ""
 if [[ "$SAVE_MODE" == true ]]; then
     echo -e "${YELLOW}${BOLD}Node outputs cached as .sh files in:${RESET} ${NODE_CACHE_DIR}"
+    echo -e "${DIM}Cache can be used on systems without Node.js${RESET}"
+elif [[ "$SAVEFORCE_MODE" == true ]]; then
+    echo -e "${YELLOW}${BOLD}Node outputs forcefully cached as .sh files in:${RESET} ${NODE_CACHE_DIR}"
     echo -e "${DIM}Cache can be used on systems without Node.js${RESET}"
 elif [[ "$CACHED_MODE" == true ]]; then
     echo -e "${CYAN}${BOLD}Execution mode: CACHED${RESET} - Node.js was not required"
