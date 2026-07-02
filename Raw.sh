@@ -10,6 +10,7 @@ CALLER_DIR="$(pwd)"  # Save where the script was called from
 # Check for special flags FIRST before processing JS file
 SPECIAL_MODE=""
 FORCE_LOG_MODE="false"  # New flag for --log (only for normal JS execution)
+VERBOSE_MODE="false"    # New flag for --verbose (enables log mode and passes --verbose to tree/build.sh)
 TOOL_MODE="false"       # New flag for --tool
 TOOL_COMMAND=""         # Store the tool command
 TOOL_ARGS=""           # Store tool arguments
@@ -70,6 +71,11 @@ if [ $# -gt 0 ]; then
             echo "RawJS - version unknown"
         fi
         exit 0
+    elif [ "$1" = "--verbose" ]; then
+        # Enable verbose mode (enables log mode and passes --verbose to tree/build.sh)
+        VERBOSE_MODE="true"
+        FORCE_LOG_MODE="true"
+        shift  # Remove --verbose flag
     elif [ "$1" = "--bin" ]; then
         # Check if --bin is being used as a tool command (no JS file follows)
         shift  # Remove --bin flag
@@ -115,7 +121,7 @@ if [ $# -gt 0 ]; then
         fi
     else
         # NEW: Check if first argument is a tool name (starts with -- and not a known flag)
-        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--asm" ] && [ "$1" != "--bin" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--stools" ] && [ "$1" != "--stool" ]; then
+        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--verbose" ] && [ "$1" != "--asm" ] && [ "$1" != "--bin" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--stools" ] && [ "$1" != "--stool" ]; then
             # Extract tool name by removing leading --
             TOOL_COMMAND="${1#--}"
             TOOL_MODE="true"
@@ -127,8 +133,14 @@ if [ $# -gt 0 ]; then
     fi
 fi
 
-# Only check for --log if we're NOT in a special mode or tool mode
+# Only check for --log and --verbose if we're NOT in a special mode or tool mode
 if [ -z "$SPECIAL_MODE" ] && [ "$TOOL_MODE" = "false" ] && [ $# -gt 0 ]; then
+    if [ "$1" = "--verbose" ]; then
+        # Enable verbose mode (enables log mode and passes --verbose to tree/build.sh)
+        VERBOSE_MODE="true"
+        FORCE_LOG_MODE="true"
+        shift  # Remove the flag from arguments
+    fi
     if [ "$1" = "--log" ]; then
         FORCE_LOG_MODE="true"
         shift  # Remove the flag from arguments
@@ -942,7 +954,7 @@ compile_and_copy() {
 
 # Display usage information (minimalistic)
 show_usage() {
-    echo -e "${YELLOW}Usage: bash Raw.sh [--log] <path/to/file.js> [args...]${NC}"
+    echo -e "${YELLOW}Usage: bash Raw.sh [--log] [--verbose] <path/to/file.js> [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --reset${NC}"
     echo -e "${YELLOW}       bash Raw.sh --test${NC}"
     echo -e "${YELLOW}       bash Raw.sh --tool [command] [args...]${NC}"
@@ -1939,7 +1951,13 @@ main_flow() {
         execute_file "silent" "./arch" "$OUTPUT_JS"
         mv_file "arch_output" "$EXECUTION_SOURCE/arch_output"
         rm_file "$SCRIPT_DIR/output.js"
-        execute_file "silent" "./tree/build.sh"
+        
+        # Execute tree/build.sh with --verbose flag if verbose mode is active
+        if [ "$VERBOSE_MODE" = "true" ]; then
+            execute_file "silent" "./tree/build.sh" "--verbose"
+        else
+            execute_file "silent" "./tree/build.sh"
+        fi
         
         # Check if binary output mode is active (--bin flag was used)
         if [ "$BIN_OUTPUT_MODE" = "true" ]; then

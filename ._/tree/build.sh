@@ -17,6 +17,9 @@ BASH_RUNNER="${SCRIPT_DIR}/../basm/sbasm.sh"
 JS_DIR="${SCRIPT_DIR}/js/"
 CHAIN_DIR="${SCRIPT_DIR}/chain/"
 
+# Maximum number of output lines to show per nested execution in verbose mode
+MAX_VERBOSE_OUTPUT_LINES=20
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -25,6 +28,7 @@ BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 WHITE='\033[1;37m'
+ORANGE='\033[0;33m'
 NC='\033[0m' # No Color
 
 # Initialize counters
@@ -48,6 +52,7 @@ CURRENT_CONTENT=""
 # Execution depth tracking for verbose mode
 EXECUTION_DEPTH=0
 EXECUTION_PATH=()
+EXECUTION_TREE=()
 
 # Function to get current timestamp in milliseconds
 get_timestamp_ms() {
@@ -75,6 +80,31 @@ get_indent() {
         indent+="  "
     done
     echo "$indent"
+}
+
+# Function to build execution tree visualization
+get_tree_prefix() {
+    local depth=$1
+    local is_last=$2
+    local prefix=""
+    
+    for ((i=0; i<depth-1; i++)); do
+        if [[ "${EXECUTION_TREE[$i]}" == "last" ]]; then
+            prefix+="    "
+        else
+            prefix+="│   "
+        fi
+    done
+    
+    if [[ $depth -gt 0 ]]; then
+        if [[ "$is_last" == "true" ]]; then
+            prefix+="└── "
+        else
+            prefix+="├── "
+        fi
+    fi
+    
+    echo "$prefix"
 }
 
 # Function to log messages based on mode
@@ -117,11 +147,22 @@ log_debug() {
 # Function to show execution header in verbose mode
 log_execution_start() {
     if [[ "$VERBOSE_MODE" == true ]]; then
-        local indent=$(get_indent $EXECUTION_DEPTH)
-        echo -e "${WHITE}════════════════════════════════════════${NC}"
-        echo -e "${WHITE}[EXECUTION START]${NC} ${indent}$1"
+        local execution_type=$1
+        local file_path=$2
+        local tree_prefix=$(get_tree_prefix $EXECUTION_DEPTH "false")
+        
+        echo ""
+        echo -e "${WHITE}${tree_prefix}▶ ${execution_type}: ${file_path}${NC}"
+        
         if [[ $EXECUTION_DEPTH -gt 0 ]]; then
-            echo -e "${WHITE}[CALL PATH]${NC} ${indent}${EXECUTION_PATH[-1]}"
+            local call_chain=""
+            for ((i=0; i<${#EXECUTION_PATH[@]}; i++)); do
+                if [[ $i -gt 0 ]]; then
+                    call_chain+=" → "
+                fi
+                call_chain+="${EXECUTION_PATH[$i]}"
+            done
+            echo -e "${ORANGE}${tree_prefix}  Chain: ${call_chain}${NC}"
         fi
     fi
 }
@@ -129,32 +170,63 @@ log_execution_start() {
 # Function to show execution footer in verbose mode
 log_execution_end() {
     if [[ "$VERBOSE_MODE" == true ]]; then
-        local indent=$(get_indent $EXECUTION_DEPTH)
         local status=$1
         local duration=$2
+        local tree_prefix=$(get_tree_prefix $EXECUTION_DEPTH "false")
         
         if [[ $status -eq 0 ]]; then
-            echo -e "${GREEN}[EXECUTION END]${NC} ${indent}Success ($(format_duration $duration))"
+            echo -e "${GREEN}${tree_prefix}✓ Completed: $(format_duration $duration)${NC}"
         else
-            echo -e "${RED}[EXECUTION END]${NC} ${indent}Failed with exit code: $status ($(format_duration $duration))"
+            echo -e "${RED}${tree_prefix}✗ Failed (exit code: $status): $(format_duration $duration)${NC}"
         fi
-        echo -e "${WHITE}════════════════════════════════════════${NC}"
         echo ""
     fi
 }
 
-# Function to show file content in verbose mode
+# Function to show file content in verbose mode (truncated)
 log_file_content() {
     if [[ "$VERBOSE_MODE" == true ]]; then
-        local indent=$(get_indent $EXECUTION_DEPTH)
         local file_path="$1"
         local content="$2"
+        local total_lines=$(echo "$content" | wc -l)
+        local tree_prefix=$(get_tree_prefix $EXECUTION_DEPTH "false")
         
-        echo -e "${CYAN}[FILE CONTENT]${NC} ${indent}File: $file_path"
-        echo -e "${CYAN}[CONTENT]${NC} ${indent}$(echo "$content" | head -5 | sed "s/^/${indent}/")"
-        if [[ $(echo "$content" | wc -l) -gt 5 ]]; then
-            echo -e "${CYAN}[...]${NC} ${indent}... (truncated)"
+        echo -e "${CYAN}${tree_prefix}  File: $file_path${NC}"
+        echo -e "${CYAN}${tree_prefix}  Content:${NC}"
+        echo "$content" | head -5 | while IFS= read -r line; do
+            echo -e "${CYAN}${tree_prefix}    $line${NC}"
+        done
+        if [[ $total_lines -gt 5 ]]; then
+            echo -e "${CYAN}${tree_prefix}    ... (truncated, total lines: $total_lines)${NC}"
         fi
+    fi
+}
+
+# Function to print truncated output with tree visualization
+log_truncated_output() {
+    local label="$1"
+    local output="$2"
+    local max_lines="$3"
+    local total_lines=$(echo "$output" | wc -l)
+    local tree_prefix=$(get_tree_prefix $EXECUTION_DEPTH "false")
+    
+    if [[ $total_lines -le $max_lines ]]; then
+        # Show all lines if within limit
+        echo "$output" | while IFS= read -r line; do
+            echo -e "${CYAN}${tree_prefix}  │ ${line}${NC}"
+        done
+    else
+        # Show first half of max_lines
+        local half_lines=$((max_lines / 2))
+        echo -e "${CYAN}${tree_prefix}  │ ── Output (showing ${half_lines}/${total_lines} lines) ──${NC}"
+        echo "$output" | head -n $half_lines | while IFS= read -r line; do
+            echo -e "${CYAN}${tree_prefix}  │ ${line}${NC}"
+        done
+        echo -e "${CYAN}${tree_prefix}  │ ... ($((total_lines - max_lines)) lines omitted) ...${NC}"
+        echo "$output" | tail -n $half_lines | while IFS= read -r line; do
+            echo -e "${CYAN}${tree_prefix}  │ ${line}${NC}"
+        done
+        echo -e "${CYAN}${tree_prefix}  │ ── End of output ──${NC}"
     fi
 }
 
@@ -244,18 +316,21 @@ create_temp_file() {
     fi
 }
 
-# Function to execute basm.sh for .asm files with verbose output
+# Function to execute basm.sh for .asm files with truncated verbose output
 execute_basm() {
     local input_file="$1"
     local asm_file="$2"
     local execution_start_time=0
     local output_file="${asm_file%.asm}_output.txt"
     
+    # Mark if this is the last in current level
+    EXECUTION_TREE+=("false")
+    
     # Push to execution path
-    EXECUTION_PATH+=("basm:$asm_file")
+    EXECUTION_PATH+=("$(basename "$asm_file")")
     EXECUTION_DEPTH=$((EXECUTION_DEPTH + 1))
     
-    log_execution_start "bash $BASH_RUNNER $asm_file"
+    log_execution_start "BASM" "$asm_file"
     
     if [[ "$SILENT_MODE" == false ]]; then
         log_info "Executing: bash $BASH_RUNNER $asm_file"
@@ -268,28 +343,18 @@ execute_basm() {
     local exit_code=0
     
     if [[ "$VERBOSE_MODE" == true ]]; then
-        log_debug "Running basm with verbose output capture..."
+        log_debug "Running basm with truncated verbose output capture..."
         
-        # Capture and display all output in verbose mode
-        {
-            echo "=== BASH RUNNER OUTPUT ==="
-            bash "$BASH_RUNNER" "$asm_file" 2>&1
-            exit_code=$?
-            echo "=== EXIT CODE: $exit_code ==="
-        } | tee "$output_file" | while IFS= read -r line; do
-            local indent=$(get_indent $EXECUTION_DEPTH)
-            echo -e "${CYAN}[BASM OUTPUT]${NC} ${indent}$line"
-        done
+        # Capture all output to file and display truncated version
+        bash "$BASH_RUNNER" "$asm_file" > "$output_file" 2>&1
+        exit_code=$?
         
-        # Also show the output file content
+        # Show truncated output in verbose mode
         if [[ -f "$output_file" ]]; then
+            local captured_output=$(cat "$output_file")
             log_debug "Full output saved to: $output_file"
-            if [[ $(wc -l < "$output_file") -gt 0 ]]; then
-                log_debug "Output file content (first 20 lines):"
-                head -20 "$output_file" | while IFS= read -r line; do
-                    local indent=$(get_indent $EXECUTION_DEPTH)
-                    echo -e "${PURPLE}[OUTPUT]${NC} ${indent}$line"
-                done
+            if [[ -n "$captured_output" ]]; then
+                log_truncated_output "BASM OUTPUT" "$captured_output" "$MAX_VERBOSE_OUTPUT_LINES"
             fi
         fi
     else
@@ -309,7 +374,8 @@ execute_basm() {
     
     # Pop from execution path
     EXECUTION_DEPTH=$((EXECUTION_DEPTH - 1))
-    unset EXECUTION_PATH[-1]
+    unset 'EXECUTION_PATH[-1]'
+    unset 'EXECUTION_TREE[-1]'
     
     if [[ $exit_code -eq 0 ]]; then
         if [[ "$SILENT_MODE" == false ]]; then
@@ -324,7 +390,7 @@ execute_basm() {
     fi
 }
 
-# Function to execute binary files directly with verbose output
+# Function to execute binary files directly with truncated verbose output
 execute_binary() {
     local input_file="$1"
     local binary_file="$2"
@@ -334,11 +400,14 @@ execute_binary() {
     # Make sure binary is executable
     chmod +x "$binary_file" 2>/dev/null || true
     
+    # Mark if this is the last in current level
+    EXECUTION_TREE+=("false")
+    
     # Push to execution path
-    EXECUTION_PATH+=("binary:$binary_file")
+    EXECUTION_PATH+=("$(basename "$binary_file")")
     EXECUTION_DEPTH=$((EXECUTION_DEPTH + 1))
     
-    log_execution_start "Direct binary execution: $binary_file"
+    log_execution_start "BINARY" "$binary_file"
     
     if [[ "$SILENT_MODE" == false ]]; then
         log_info "Executing binary directly: $binary_file"
@@ -351,28 +420,18 @@ execute_binary() {
     local exit_code=0
     
     if [[ "$VERBOSE_MODE" == true ]]; then
-        log_debug "Running binary with verbose output capture..."
+        log_debug "Running binary with truncated verbose output capture..."
         
-        # Capture and display all output in verbose mode
-        {
-            echo "=== BINARY OUTPUT ==="
-            "$binary_file" 2>&1
-            exit_code=$?
-            echo "=== EXIT CODE: $exit_code ==="
-        } | tee "$output_file" | while IFS= read -r line; do
-            local indent=$(get_indent $EXECUTION_DEPTH)
-            echo -e "${CYAN}[BINARY OUTPUT]${NC} ${indent}$line"
-        done
+        # Capture all output to file and display truncated version
+        "$binary_file" > "$output_file" 2>&1
+        exit_code=$?
         
-        # Also show the output file content
+        # Show truncated output in verbose mode
         if [[ -f "$output_file" ]]; then
+            local captured_output=$(cat "$output_file")
             log_debug "Full output saved to: $output_file"
-            if [[ $(wc -l < "$output_file") -gt 0 ]]; then
-                log_debug "Output file content (first 20 lines):"
-                head -20 "$output_file" | while IFS= read -r line; do
-                    local indent=$(get_indent $EXECUTION_DEPTH)
-                    echo -e "${PURPLE}[OUTPUT]${NC} ${indent}$line"
-                done
+            if [[ -n "$captured_output" ]]; then
+                log_truncated_output "BINARY OUTPUT" "$captured_output" "$MAX_VERBOSE_OUTPUT_LINES"
             fi
         fi
     else
@@ -392,7 +451,8 @@ execute_binary() {
     
     # Pop from execution path
     EXECUTION_DEPTH=$((EXECUTION_DEPTH - 1))
-    unset EXECUTION_PATH[-1]
+    unset 'EXECUTION_PATH[-1]'
+    unset 'EXECUTION_TREE[-1]'
     
     if [[ $exit_code -eq 0 ]]; then
         if [[ "$SILENT_MODE" == false ]]; then
@@ -407,7 +467,7 @@ execute_binary() {
     fi
 }
 
-# Function to execute .sh files directly with bash and verbose output
+# Function to execute .sh files directly with bash and truncated verbose output
 execute_sh() {
     local input_file="$1"
     local sh_file="$2"
@@ -417,11 +477,14 @@ execute_sh() {
     # Make sure shell script is executable
     chmod +x "$sh_file" 2>/dev/null || true
     
+    # Mark if this is the last in current level
+    EXECUTION_TREE+=("false")
+    
     # Push to execution path
-    EXECUTION_PATH+=("sh:$sh_file")
+    EXECUTION_PATH+=("$(basename "$sh_file")")
     EXECUTION_DEPTH=$((EXECUTION_DEPTH + 1))
     
-    log_execution_start "bash $sh_file"
+    log_execution_start "SHELL" "$sh_file"
     
     if [[ "$SILENT_MODE" == false ]]; then
         log_info "Executing shell script: bash $sh_file"
@@ -434,40 +497,32 @@ execute_sh() {
     local exit_code=0
     
     if [[ "$VERBOSE_MODE" == true ]]; then
-        log_debug "Running shell script with verbose output capture..."
+        log_debug "Running shell script with truncated verbose output capture..."
         
-        # Show script content in verbose mode
+        # Show script content in verbose mode (truncated)
         if [[ -f "$sh_file" ]]; then
-            log_debug "Shell script content (first 10 lines):"
-            head -10 "$sh_file" | while IFS= read -r line; do
-                local indent=$(get_indent $EXECUTION_DEPTH)
-                echo -e "${PURPLE}[SCRIPT]${NC} ${indent}$line"
+            local script_content=$(cat "$sh_file")
+            local script_total_lines=$(echo "$script_content" | wc -l)
+            local tree_prefix=$(get_tree_prefix $EXECUTION_DEPTH "false")
+            echo -e "${PURPLE}${tree_prefix}  Script preview (${script_total_lines} lines):${NC}"
+            echo "$script_content" | head -10 | while IFS= read -r line; do
+                echo -e "${PURPLE}${tree_prefix}  │ ${line}${NC}"
             done
-            if [[ $(wc -l < "$sh_file") -gt 10 ]]; then
-                log_debug "... (script continues)"
+            if [[ $script_total_lines -gt 10 ]]; then
+                echo -e "${PURPLE}${tree_prefix}  │ ... ($((script_total_lines - 10)) more lines)${NC}"
             fi
         fi
         
-        # Capture and display all output in verbose mode
-        {
-            echo "=== SHELL SCRIPT OUTPUT ==="
-            bash "$sh_file" 2>&1
-            exit_code=$?
-            echo "=== EXIT CODE: $exit_code ==="
-        } | tee "$output_file" | while IFS= read -r line; do
-            local indent=$(get_indent $EXECUTION_DEPTH)
-            echo -e "${CYAN}[SH OUTPUT]${NC} ${indent}$line"
-        done
+        # Capture all output to file and display truncated version
+        bash "$sh_file" > "$output_file" 2>&1
+        exit_code=$?
         
-        # Also show the output file content
+        # Show truncated output in verbose mode
         if [[ -f "$output_file" ]]; then
+            local captured_output=$(cat "$output_file")
             log_debug "Full output saved to: $output_file"
-            if [[ $(wc -l < "$output_file") -gt 0 ]]; then
-                log_debug "Output file content (first 20 lines):"
-                head -20 "$output_file" | while IFS= read -r line; do
-                    local indent=$(get_indent $EXECUTION_DEPTH)
-                    echo -e "${PURPLE}[OUTPUT]${NC} ${indent}$line"
-                done
+            if [[ -n "$captured_output" ]]; then
+                log_truncated_output "SH OUTPUT" "$captured_output" "$MAX_VERBOSE_OUTPUT_LINES"
             fi
         fi
     else
@@ -487,7 +542,8 @@ execute_sh() {
     
     # Pop from execution path
     EXECUTION_DEPTH=$((EXECUTION_DEPTH - 1))
-    unset EXECUTION_PATH[-1]
+    unset 'EXECUTION_PATH[-1]'
+    unset 'EXECUTION_TREE[-1]'
     
     if [[ $exit_code -eq 0 ]]; then
         if [[ "$SILENT_MODE" == false ]]; then
@@ -784,12 +840,15 @@ main() {
     
     if [[ "$SILENT_MODE" == false ]]; then
         if [[ "$VERBOSE_MODE" == true ]]; then
-            log_debug "Verbose mode enabled - showing detailed execution logs"
+            echo -e "${WHITE}╔══════════════════════════════════════════╗${NC}"
+            echo -e "${WHITE}║         BUILD PROCESS - VERBOSE MODE      ║${NC}"
+            echo -e "${WHITE}╚══════════════════════════════════════════╝${NC}"
+            echo ""
             log_debug "Script PID: $$"
             log_debug "Script directory: $SCRIPT_DIR"
-            log_debug "Current directory after cd: $(pwd)"
             log_debug "Using BASH_RUNNER: $BASH_RUNNER"
             log_debug "ARCH_OUTPUT: $ARCH_OUTPUT"
+            log_debug "Max verbose output lines per execution: $MAX_VERBOSE_OUTPUT_LINES"
             echo ""
         fi
         
@@ -958,13 +1017,24 @@ show_usage() {
     echo ""
     echo "Options:"
     echo "  --silent    Execute without verbose logging, only show final summary"
-    echo "  --verbose   Show detailed execution logs including all nested runs"
+    echo "  --verbose   Show detailed execution logs including nested execution tree"
     echo "  -h, --help  Show this help message"
     echo ""
     echo "Output modes (mutually exclusive):"
     echo "  Normal      : Shows basic info and warnings"
     echo "  --silent    : Shows only errors and final summary"
-    echo "  --verbose   : Shows everything including nested execution output"
+    echo "  --verbose   : Shows execution tree with truncated output"
+    echo "                (output is truncated to $MAX_VERBOSE_OUTPUT_LINES lines per execution)"
+    echo ""
+    echo "In verbose mode, nested executions are shown as a tree structure:"
+    echo "  ▶ BASM: /path/to/file.asm"
+    echo "    Chain: file1.asm → file2.sh → file3"
+    echo "    │ ── Output (showing 10/150 lines) ──"
+    echo "    │ <output lines>"
+    echo "    │ ... (130 lines omitted) ..."
+    echo "    │ <last output lines>"
+    echo "    │ ── End of output ──"
+    echo "  ✓ Completed: 1.234s"
     echo ""
     exit 0
 }
