@@ -334,9 +334,10 @@ generate_full_asm() {
                          echo "    fmulp st1, st0" ;;
                     '/') echo "    ; Float division"
                          echo "    fdivp st1, st0" ;;
-                    '%') echo "    ; Float modulo"
-                         echo "    fprem"
-                         echo "    fstp st1" ;;
+                    '%') echo "    ; Float modulo (a % b)"
+                         echo "    fxch           ; swap st0 and st1 so st0 = a, st1 = b"
+                         echo "    fprem          ; st0 = a % b, st1 = b"
+                         echo "    fstp st1       ; pop b, result in st0" ;;
                 esac
             else
                 case "$val" in
@@ -356,15 +357,15 @@ generate_full_asm() {
                          echo "    imul rbx"
                          echo "    push rax" ;;
                     '/') echo "    ; Integer division"
-                         echo "    xor rdx, rdx"
                          echo "    pop rbx"
                          echo "    pop rax"
+                         echo "    cqo            ; sign-extend rax into rdx:rax"
                          echo "    idiv rbx"
                          echo "    push rax" ;;
                     '%') echo "    ; Integer modulo"
-                         echo "    xor rdx, rdx"
                          echo "    pop rbx"
                          echo "    pop rax"
+                         echo "    cqo            ; sign-extend rax into rdx:rax"
                          echo "    idiv rbx"
                          echo "    push rdx" ;;
                 esac
