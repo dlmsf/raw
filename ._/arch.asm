@@ -53,9 +53,9 @@ section .data
     color_index       dd 0
     color_array       dq color1, color2, color3, color4
 
-    ; Buffers
-    current_stmt      times 1024 db 0
-    block_stmt        times 1024 db 0
+    ; Buffers - INCREASED FROM 1024 TO 8192
+    current_stmt      times 8192 db 0
+    block_stmt        times 8192 db 0
     char_buffer       db 0
     stmt_started      db 0
     current_color     dq 0
@@ -69,8 +69,8 @@ section .data
     chain_stack       times 16 dq 0  ; Stores chain colors
     chain_brace_stack times 16 dd 0  ; Stores brace depth when chain started
 
-    ; Buffer for clean output (no color codes)
-    clean_buffer      times 2048 db 0
+    ; Buffer for clean output (no color codes) - INCREASED FROM 2048 TO 16384
+    clean_buffer      times 16384 db 0
     clean_pos         dq 0
 
 section .bss
@@ -300,9 +300,9 @@ append_to_clean_buffer:
     inc rdi
     inc qword [clean_pos]
 
-    ; Check buffer size
+    ; Check buffer size - UPDATED TO 16383
     mov rax, [clean_pos]
-    cmp rax, 2047
+    cmp rax, 16383
     jl .copy_loop
 
     ; Buffer full, write to file
@@ -1456,7 +1456,7 @@ compare_strings_util:
     ret
 
 ; ------------------------------------------------------------
-; BUFFER MANAGEMENT
+; BUFFER MANAGEMENT - UPDATED FOR 8192 BYTE BUFFERS
 ; ------------------------------------------------------------
 copy_to_block_stmt:
     push rsi
@@ -1465,7 +1465,7 @@ copy_to_block_stmt:
 
     mov rsi, current_stmt
     mov rdi, block_stmt
-    mov rcx, 1024
+    mov rcx, 8192
 
 .copy_block_loop:
     mov al, [rsi]
@@ -1487,7 +1487,7 @@ clear_block_stmt_buffer:
     push rcx
 
     mov rdi, block_stmt
-    mov rcx, 1024
+    mov rcx, 8192
     xor al, al
     rep stosb
 
@@ -1500,7 +1500,7 @@ clear_stmt_buffer:
     push rcx
 
     mov rdi, current_stmt
-    mov rcx, 1024
+    mov rcx, 8192
     xor al, al
     rep stosb
 
@@ -1516,7 +1516,7 @@ append_to_stmt:
     xor rcx, rcx
 
 .find_stmt_end:
-    cmp rcx, 1023
+    cmp rcx, 8191
     jge .stmt_overflow
     cmp byte [rdi + rcx], 0
     je .found_stmt_end
