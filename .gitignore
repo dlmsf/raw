@@ -13,3 +13,4 @@ arch_output
 build_output.asm
 generate-jsinfo*
 a.out
+tests/
