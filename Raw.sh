@@ -18,11 +18,15 @@ ASM_MODE="false"        # New flag for --asm
 ASM_ONLY_MODE="false"   # Flag for --asm without JS file
 BIN_OUTPUT_MODE="false" # Flag for --bin output generation with JS processing
 BIN_OUTPUT_NAME=""      # Store the output name for --bin mode
+CLI_MODE="false"        # New flag for --cli
 
 if [ $# -gt 0 ]; then
     if [ "$1" = "--test" ] || [ "$1" = "--reset" ]; then
         SPECIAL_MODE="$1"
         shift  # Remove the flag from arguments
+    elif [ "$1" = "--cli" ]; then
+        CLI_MODE="true"
+        shift  # Remove --cli flag
     elif [ "$1" = "--tool" ]; then
         TOOL_MODE="true"
         shift  # Remove --tool flag
@@ -121,7 +125,7 @@ if [ $# -gt 0 ]; then
         fi
     else
         # NEW: Check if first argument is a tool name (starts with -- and not a known flag)
-        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--verbose" ] && [ "$1" != "--asm" ] && [ "$1" != "--bin" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--stools" ] && [ "$1" != "--stool" ]; then
+        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--verbose" ] && [ "$1" != "--asm" ] && [ "$1" != "--bin" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--stools" ] && [ "$1" != "--stool" ] && [ "$1" != "--cli" ]; then
             # Extract tool name by removing leading --
             TOOL_COMMAND="${1#--}"
             TOOL_MODE="true"
@@ -134,7 +138,7 @@ if [ $# -gt 0 ]; then
 fi
 
 # Only check for --log and --verbose if we're NOT in a special mode or tool mode
-if [ -z "$SPECIAL_MODE" ] && [ "$TOOL_MODE" = "false" ] && [ $# -gt 0 ]; then
+if [ -z "$SPECIAL_MODE" ] && [ "$TOOL_MODE" = "false" ] && [ "$CLI_MODE" = "false" ] && [ $# -gt 0 ]; then
     if [ "$1" = "--verbose" ]; then
         # Enable verbose mode (enables log mode and passes --verbose to tree/build.sh)
         VERBOSE_MODE="true"
@@ -147,10 +151,10 @@ if [ -z "$SPECIAL_MODE" ] && [ "$TOOL_MODE" = "false" ] && [ $# -gt 0 ]; then
     fi
 fi
 
-# Process JS file argument BEFORE changing directories (only if not in tool mode and not asm-only mode)
+# Process JS file argument BEFORE changing directories (only if not in tool mode and not asm-only mode and not cli mode)
 JS_FILE=""
 JS_ARGS=""
-if [ "$TOOL_MODE" = "false" ] && [ $# -gt 0 ] && [ -z "$SPECIAL_MODE" ] && [ "$ASM_ONLY_MODE" = "false" ]; then
+if [ "$TOOL_MODE" = "false" ] && [ "$CLI_MODE" = "false" ] && [ $# -gt 0 ] && [ -z "$SPECIAL_MODE" ] && [ "$ASM_ONLY_MODE" = "false" ]; then
     # Check if BIN_OUTPUT_MODE is already set (from --bin parsing above)
     if [ "$BIN_OUTPUT_MODE" = "false" ]; then
         # Check for --bin flag before JS file (in case it wasn't caught above)
@@ -958,6 +962,7 @@ show_usage() {
     echo -e "${YELLOW}Usage: bash Raw.sh [--log] [--verbose] <path/to/file.js> [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --reset${NC}"
     echo -e "${YELLOW}       bash Raw.sh --test${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --cli${NC}"
     echo -e "${YELLOW}       bash Raw.sh --tool [command] [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --<tool> [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --tools${NC}"
@@ -1058,6 +1063,108 @@ generate_binary() {
     fi
     
     return $result
+}
+
+# Function: Handle CLI mode
+# Creates an interactive CLI where each line is treated as JS code
+handle_cli() {
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${GREEN}  RawJS Interactive CLI${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo -e "${YELLOW}Type your JavaScript code line by line.${NC}"
+    echo -e "${YELLOW}Each line will be executed immediately.${NC}"
+    echo -e "${YELLOW}Type 'exit' or 'quit' to leave.${NC}"
+    echo -e "${YELLOW}Type 'clear' to clear accumulated code.${NC}"
+    echo -e "${BLUE}========================================${NC}"
+    echo ""
+    
+    # Create temp JS file in caller directory
+    local cli_js_file="$CALLER_DIR/.rawjs_cli.js"
+    
+    # Initialize empty JS file
+    echo "" > "$cli_js_file"
+    
+    # Track previous output to extract only new output
+    local previous_output=""
+    
+    # Start the interactive loop
+    while true; do
+        # Display prompt
+        echo -ne "${GREEN}rawjs> ${NC}"
+        
+        # Read user input
+        if ! IFS= read -r user_input; then
+            # EOF (Ctrl+D)
+            echo ""
+            break
+        fi
+        
+        # Check for exit commands
+        if [ "$user_input" = "exit" ] || [ "$user_input" = "quit" ]; then
+            echo -e "${YELLOW}Goodbye!${NC}"
+            break
+        fi
+        
+        # Check for clear command
+        if [ "$user_input" = "clear" ]; then
+            echo "" > "$cli_js_file"
+            previous_output=""
+            echo -e "${BLUE}Cleared accumulated code.${NC}"
+            continue
+        fi
+        
+        # Skip empty lines
+        if [ -z "$user_input" ]; then
+            continue
+        fi
+        
+        # Append the input to the JS file
+        echo "$user_input" >> "$cli_js_file"
+        
+        # Execute the JS file through the Raw engine
+        # Use silent mode for intermediate steps to keep output clean
+        local output_js="$SCRIPT_DIR/output.js"
+        local arch_output="$SCRIPT_DIR/arch_output"
+        
+        # Execute the processing pipeline silently
+        execute_file "silent" "./._/min/min" "$cli_js_file" >/dev/null 2>&1
+        execute_file "silent" "./._/min/polish.sh" "$output_js" >/dev/null 2>&1
+        execute_file "silent" "./build" >/dev/null 2>&1
+        mv_file "build_output.asm" "$EXECUTION_SOURCE/build_output.asm" 2>/dev/null
+        execute_file "silent" "./arch" "$output_js" >/dev/null 2>&1
+        mv_file "arch_output" "$EXECUTION_SOURCE/arch_output" 2>/dev/null
+        rm_file "$SCRIPT_DIR/output.js" 2>/dev/null
+        execute_file "silent" "./tree/build.sh" >/dev/null 2>&1
+        
+        # Execute the final binary and capture output
+        local current_output=$(execute_file "log" "./build_output.asm" 2>&1)
+        
+        # Extract only the new output (difference from previous)
+        if [ -n "$previous_output" ]; then
+            # Find what's new in current output compared to previous
+            # Use diff-like approach to get only new content
+            local new_output=$(diff <(echo "$previous_output") <(echo "$current_output") | grep '^>' | sed 's/^> //')
+            
+            # If diff found new content, display it
+            if [ -n "$new_output" ]; then
+                echo "$new_output"
+            fi
+            # If no new output (same as before), show nothing
+        else
+            # First execution, show all output
+            echo "$current_output"
+        fi
+        
+        # Update previous output for next iteration
+        previous_output="$current_output"
+        
+        echo ""  # Add blank line for readability
+    done
+    
+    # Clean up temp file
+    rm_file "$cli_js_file"
+    
+    return 0
 }
 
 # ============================================
@@ -1897,7 +2004,24 @@ main_flow() {
         exit 0
     fi
     
-    # Step 3: Check for asm-only mode (--asm without JS file)
+    # Step 3: Check for CLI mode
+    if [ "$CLI_MODE" = "true" ]; then
+        # Check if dev directory exists
+        if [ ! -d "$SCRIPT_DIR/dev" ]; then
+            echo -e "${YELLOW}Dev directory doesn't exist. Building first...${NC}"
+            compile_and_copy
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}Build failed! Cannot start CLI mode.${NC}"
+                exit 1
+            fi
+        fi
+        
+        # Start interactive CLI
+        handle_cli
+        exit $?
+    fi
+    
+    # Step 4: Check for asm-only mode (--asm without JS file)
     if [ "$ASM_MODE" = "true" ] && [ "$ASM_ONLY_MODE" = "true" ]; then
         # Check if dev directory exists
         if [ ! -d "$SCRIPT_DIR/dev" ]; then
@@ -1914,7 +2038,7 @@ main_flow() {
         exit $?
     fi
     
-    # Step 4: Check for special modes
+    # Step 5: Check for special modes
     if [ "$SPECIAL_MODE" = "--reset" ]; then
         handle_reset
         exit $?
@@ -1923,7 +2047,7 @@ main_flow() {
         exit $?
     fi
     
-    # Step 5: Normal execution flow (only if no special mode)
+    # Step 6: Normal execution flow (only if no special mode)
     # Compile and copy only if ./dev doesn't exist (based on script's directory)
     if [ ! -d "$SCRIPT_DIR/dev" ]; then
         compile_and_copy
@@ -1935,7 +2059,7 @@ main_flow() {
         fi
     fi
     
-    # Step 6: Process the JS file if provided
+    # Step 7: Process the JS file if provided
     if [ -n "$JS_FILE" ]; then
         process_js_file "$JS_FILE" $JS_ARGS
         if [ $? -ne 0 ]; then
