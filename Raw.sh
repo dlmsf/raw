@@ -297,6 +297,7 @@ get_tool_working_dir() {
         "bin")     echo "caller" ;;
         "emb")     echo "caller" ;;
         "testcheck")     echo "caller" ;;
+        "clean")     echo "caller" ;;
         "jsclean")     echo "caller" ;;
         
         # =====================================================================
@@ -1783,6 +1784,16 @@ tool_chain() {
     
     # Execute with automatic working directory handling
     execute_file "log" "./._/._/._/chaincheck.sh" "$working_dir" "$@"
+    
+    return 0
+}
+
+tool_clean() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "clean")
+    
+    # Execute with automatic working directory handling
+    execute_file "log" "../._/._/._/._/clean.sh" "$working_dir" "$@"
     
     return 0
 }
