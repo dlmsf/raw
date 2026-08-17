@@ -292,6 +292,7 @@ get_tool_working_dir() {
         "build")     echo "caller" ;;
         "bin")     echo "caller" ;;
         "emb")     echo "caller" ;;
+        "testcheck")     echo "caller" ;;
         "jsclean")     echo "caller" ;;
         
         # =====================================================================
@@ -1510,6 +1511,16 @@ tool_dual() {
     
     # Execute with automatic working directory handling
     execute_file "log" "../._/._/._/._/dual.sh" "$working_dir" "$@"
+    
+    return 0
+}
+
+tool_testcheck() {
+    # Get working directory from configuration
+    local working_dir=$(get_tool_working_dir "testcheck")
+    
+    # Execute with automatic working directory handling
+    execute_file "log" "../._/._/._/._/testcheck.sh" "$working_dir" "$@"
     
     return 0
 }
