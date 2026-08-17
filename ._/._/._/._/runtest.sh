@@ -56,11 +56,50 @@ fi
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Check if we're running from within a /dev directory structure
+if [[ "$SCRIPT_DIR" == */dev/* ]] || [[ "$SCRIPT_DIR" == */dev ]]; then
+    # Go back to one level before /dev
+    DEV_PARENT="$SCRIPT_DIR"
+    while [[ "$DEV_PARENT" != "/" ]]; do
+        if [[ "$(basename "$DEV_PARENT")" == "dev" ]]; then
+            DEV_PARENT="$(dirname "$DEV_PARENT")"
+            break
+        fi
+        DEV_PARENT="$(dirname "$DEV_PARENT")"
+    done
+    
+    # From DEV_PARENT, search through ._/ directories to find runtest.sh
+    REPO_ROOT=""
+    if [[ -n "$DEV_PARENT" ]] && [[ "$DEV_PARENT" != "/" ]]; then
+        # Search for runtest.sh in nested ._ directories
+        while IFS= read -r dir; do
+            if [[ -f "${dir}/runtest.sh" ]] && [[ -d "${dir}/.test_cache" ]]; then
+                REPO_ROOT="$dir"
+                break
+            fi
+        done < <(find "$DEV_PARENT" -type d -name "._" 2>/dev/null | sort)
+        
+        # If not found in ._ directories, check DEV_PARENT itself
+        if [[ -z "$REPO_ROOT" ]] && [[ -f "${DEV_PARENT}/runtest.sh" ]] && [[ -d "${DEV_PARENT}/.test_cache" ]]; then
+            REPO_ROOT="$DEV_PARENT"
+        fi
+    fi
+    
+    # If found, use that directory for cache
+    if [[ -n "$REPO_ROOT" ]]; then
+        CACHE_DIR="${REPO_ROOT}/.test_cache"
+    else
+        CACHE_DIR="${SCRIPT_DIR}/.test_cache"
+    fi
+else
+    CACHE_DIR="${SCRIPT_DIR}/.test_cache"
+fi
+
 # Define paths
 TESTS_DIR="${SCRIPT_DIR}/tests"
 DUAL_SCRIPT="${SCRIPT_DIR}/dual.sh"
-CACHE_DIR="${SCRIPT_DIR}/.test_cache"
 NODE_CACHE_DIR="${CACHE_DIR}/node_outputs"
+
 
 # Color definitions
 BOLD='\033[1m'
