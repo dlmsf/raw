@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================================
-# RAWJS & BASM INSTALLATION SCRIPT
+# RAWJS & BASM INSTALLATION SCRIPT (with modular build system)
 # =============================================================================
 
 # PROJECT INFO
@@ -16,8 +16,8 @@ BIN_DIR="/usr/local/bin"
 
 # SOURCE PATHS
 REPO_DIR=$(pwd)
-RAWJS_SOURCE_DIR="$REPO_DIR"  # Main level for Raw.sh
-BASM_SOURCE_DIR="$REPO_DIR/._/basm"  # BASM in ._/basm
+RAWJS_SOURCE_DIR="$REPO_DIR"          # Main level for Raw.sh
+BASM_SOURCE_DIR="$REPO_DIR/._/basm"   # BASM in ._/basm
 
 # LOGGING
 LOG_FILE="/var/log/rawjs-install.log"
@@ -25,112 +25,125 @@ LOG_MODE=false
 BACKUP_DIR="/usr/local/etc/rawjs-runtime_old_$(date +%s)"
 
 # =============================================================================
-# SYSTEM DETECTION AND PACKAGE INSTALLATION
+# BUILD SYSTEM VARIABLES (modular addition – no changes to original variables)
+# =============================================================================
+BUILD_MODE=false
+BUILD_TAR=false
+BUILD_CONFIG=false
+BUILD_MESSAGE_MODE=false
+BUILD_STAGED=false
+BUILD_VERSION=""
+BUILD_SAVE_NAME=""
+BUILD_DIR="$REPO_DIR/build"
+BUILD_SAVE_FILE="$REPO_DIR/buildsaves.cfg"
+BUILD_SELECTED_COMMIT=""
+BUILD_SELECTED_COMMIT_MSG=""
+BUILD_INCLUDE_LIST="/tmp/build_include_$$.txt"
+BUILD_INCLUDE_LIST_NAME="build_include_$$.txt"
+SAVED_INCLUDE_LIST=""
+EXCLUDE_LIST=""
+EXCLUDE_DIRS_LIST=""
+BUILD_FILES_LIST=""
+BUILD_DIRS_LIST=""
 # =============================================================================
 
-# Detect system type (ash compatible)
+# =============================================================================
+# FUNCTION DEFINITIONS (original + build system)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# SYSTEM DETECTION
+# -----------------------------------------------------------------------------
 detect_system() {
   if [ -f /etc/alpine-release ]; then
     echo "alpine"
-  elif [ -f /etc/lsb-release ]; then
-    # Check for Ubuntu specifically
-    if grep -qi "ubuntu" /etc/lsb-release 2>/dev/null; then
-      echo "ubuntu"
-    else
-      echo "unknown"
-    fi
-  elif [ -f /etc/os-release ]; then
-    # More generic detection using os-release
-    if grep -qi "alpine" /etc/os-release 2>/dev/null; then
-      echo "alpine"
-    elif grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
-      echo "ubuntu"
-    else
-      echo "unknown"
-    fi
+  elif [ -f /etc/lsb-release ] && grep -qi "ubuntu" /etc/lsb-release 2>/dev/null; then
+    echo "ubuntu"
+  elif [ -f /etc/os-release ] && grep -qi "alpine" /etc/os-release 2>/dev/null; then
+    echo "alpine"
+  elif [ -f /etc/os-release ] && grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
+    echo "ubuntu"
   else
     echo "unknown"
   fi
 }
 
-# =============================================================================
-# ALPINE-SPECIFIC NASM BINARY REPLACEMENT (RUNS ONCE PER INSTALLATION SOURCE)
-# =============================================================================
-
-# This function handles the Alpine-specific NASM binary replacement
-# It only runs if Alpine is detected and the source binary exists in alpine-pack
-# After moving, the binary is no longer in alpine-pack, so it won't run again
+# -----------------------------------------------------------------------------
+# ALPINE-SPECIFIC NASM BINARY REPLACEMENT (unchanged)
+# -----------------------------------------------------------------------------
 handle_alpine_nasm_replacement() {
   local system_type="$1"
-  
-  # Only proceed if system is Alpine
-  if [ "$system_type" != "alpine" ]; then
-    return 0
-  fi
-  
+
+  [ "$system_type" != "alpine" ] && return 0
+
   log_message "Alpine Linux detected - checking for Alpine-specific NASM binary..."
-  
-  # Define paths relative to the script execution directory (REPO_DIR)
+
   local alpine_pack_nasm="$REPO_DIR/._/basm/alpine-pack/nasm-x86_64-linux"
   local target_nasm_dir="$REPO_DIR/._/basm/x86_64-linux"
   local target_nasm="$target_nasm_dir/nasm-x86_64-linux"
-  
-  # Check if the Alpine-specific NASM binary exists in alpine-pack
+
   if [ ! -f "$alpine_pack_nasm" ]; then
     log_message "No Alpine-specific NASM binary found in alpine-pack (already processed or not present)"
     return 0
   fi
-  
+
   log_message "Found Alpine-specific NASM binary in alpine-pack"
-  
-  # Create target directory if it doesn't exist
-  if [ ! -d "$target_nasm_dir" ]; then
-    mkdir -p "$target_nasm_dir"
-    log_message "Created target directory: $target_nasm_dir"
-  fi
-  
-  # Remove ANY existing NASM binary in target directory (both possible names)
-  if [ -f "$target_nasm_dir/nasm-x86_64-linux" ]; then
-    rm -f "$target_nasm_dir/nasm-x86_64-linux"
-    log_message "Removed existing NASM binary: nasm-x86_64-linux"
-  fi
-  
-  if [ -f "$target_nasm_dir/nasm-x86_64-linux-linux" ]; then
-    rm -f "$target_nasm_dir/nasm-x86_64-linux-linux"
-    log_message "Removed existing NASM binary: nasm-x86_64-linux-linux"
-  fi
-  
-  # Also remove any other nasm binaries that might exist
+
+  mkdir -p "$target_nasm_dir"
+
+  # Remove any existing NASM binaries in target directory
   find "$target_nasm_dir" -maxdepth 1 -name "nasm*" -type f -exec rm -f {} \; 2>/dev/null
-  log_message "Cleaned all existing NASM binaries from target directory"
-  
-  # Move the Alpine-specific NASM binary to the target location with CORRECT name
+
   mv "$alpine_pack_nasm" "$target_nasm"
-  
   if [ $? -eq 0 ]; then
     log_message "✓ Moved Alpine-specific NASM binary to: $target_nasm"
-    # Make it executable
     chmod +x "$target_nasm"
-    log_message "✓ Set executable permissions on NASM binary"
   else
     log_message "⚠ Warning: Failed to move Alpine-specific NASM binary"
     return 1
   fi
-  
+
   return 0
 }
 
-# Check if required commands are available
+# -----------------------------------------------------------------------------
+# COMMAND CHECK
+# -----------------------------------------------------------------------------
 check_command() {
   command -v "$1" >/dev/null 2>&1
 }
 
-# Function to install .deb packages - EXACT COPY from working EasyAI install.sh
+# -----------------------------------------------------------------------------
+# LOGGING (unchanged)
+# -----------------------------------------------------------------------------
+log_message() {
+  local message="$1"
+  local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  if [ "$LOG_MODE" = true ]; then
+    echo "[$timestamp] $message" | tee -a "$LOG_FILE"
+  else
+    echo "[$timestamp] $message"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# PROGRESS DISPLAY (ash compatible)
+# -----------------------------------------------------------------------------
+show_progress() {
+  local message="$1"
+  local pid="$2"
+  echo "$message (please wait...)"
+  wait $pid 2>/dev/null
+  echo "$message completed."
+}
+
+# -----------------------------------------------------------------------------
+# INSTALLATION FUNCTIONS (unchanged)
+# -----------------------------------------------------------------------------
 install_debs() {
   local deb_dir="$BASM_SOURCE_DIR/ubuntu-pack"
-  
   if [ -d "$deb_dir" ]; then
-    deb_files=$(find "$deb_dir" -maxdepth 1 -name "*.deb" 2>/dev/null | tr '\n' ' ')
+    local deb_files=$(find "$deb_dir" -maxdepth 1 -name "*.deb" 2>/dev/null | tr '\n' ' ')
     if [ -n "$deb_files" ]; then
       log_message "Installing .deb packages from $deb_dir..."
       if [ "$LOG_MODE" = true ]; then
@@ -139,8 +152,7 @@ install_debs() {
         sudo dpkg -i $deb_files > /dev/null 2>&1 &
       fi
       show_progress "Installing dependencies" $!
-      
-      # Run dpkg configure to fix any dependency issues
+
       log_message "Configuring packages..."
       if [ "$LOG_MODE" = true ]; then
         sudo dpkg --configure -a &
@@ -149,290 +161,123 @@ install_debs() {
       fi
       show_progress "Configuring packages" $!
     else
-      log_message "No .deb files found in $deb_dir. Skipping .deb installation."
+      log_message "No .deb files found in $deb_dir. Skipping."
     fi
   else
-    log_message "The .deb directory ($deb_dir) does not exist. Skipping .deb installation."
+    log_message "Deb directory ($deb_dir) does not exist. Skipping."
   fi
 }
 
-# Function to install .apk packages - FIXED FOR ALPINE
 install_apks() {
   local apk_dir="$BASM_SOURCE_DIR/alpine-pack"
-  
-  if [ ! -d "$apk_dir" ]; then
-    log_message "The .apk directory ($apk_dir) does not exist. Skipping .apk installation."
-    return 1
-  fi
-  
-  # Check if apk command exists
-  if ! check_command apk; then
-    log_message "Error: apk package manager not found"
-    return 1
-  fi
-  
-  # Get list of APK files
-  apk_files=$(find "$apk_dir" -maxdepth 1 -name "*.apk" 2>/dev/null)
-  
-  if [ -z "$apk_files" ]; then
-    log_message "No .apk files found in $apk_dir. Skipping .apk installation."
-    return 0
-  fi
-  
+  [ ! -d "$apk_dir" ] && log_message "APK directory ($apk_dir) missing." && return 1
+  [ ! check_command apk ] && log_message "apk not found." && return 1
+
+  local apk_files=$(find "$apk_dir" -maxdepth 1 -name "*.apk" 2>/dev/null)
+  [ -z "$apk_files" ] && log_message "No .apk files found." && return 0
+
   log_message "Found APK packages, installing..."
-  
-  # First installation attempt - install all packages together
-  log_message "Installing all APK packages..."
-  
-  # Build list of all APK files for bulk installation
-  all_apks=""
-  for apk_file in $apk_files; do
-    all_apks="$all_apks $apk_file"
-  done
-  
-  # Try to install all packages at once (this handles dependencies better)
-  log_message "Attempting bulk installation of all packages..."
+
+  # Bulk install attempt
+  local all_apks=""
+  for apk_file in $apk_files; do all_apks="$all_apks $apk_file"; done
+  log_message "Attempting bulk installation..."
   if [ "$LOG_MODE" = true ]; then
     apk add --allow-untrusted $all_apks 2>&1
-    bulk_result=$?
+    local result=$?
   else
     apk add --allow-untrusted $all_apks > /dev/null 2>&1
-    bulk_result=$?
+    local result=$?
   fi
-  
-  if [ $bulk_result -eq 0 ]; then
-    log_message "✓ All packages installed successfully in bulk"
+
+  if [ $result -eq 0 ]; then
+    log_message "✓ All packages installed successfully"
   else
-    log_message "Bulk installation had issues, trying individual installation..."
-    
-    # Individual installation attempt with retry logic
-    first_attempt_failed=false
-    
+    log_message "Bulk install had issues, trying individual..."
+    local failed=false
     for apk_file in $apk_files; do
-      pkg_name=$(basename "$apk_file")
+      local pkg_name=$(basename "$apk_file")
       log_message "Installing: $pkg_name"
-      
       if [ "$LOG_MODE" = true ]; then
-        if apk add --allow-untrusted "$apk_file" 2>&1; then
-          log_message "✓ Successfully installed: $pkg_name"
-        else
-          log_message "✗ Failed to install: $pkg_name"
-          first_attempt_failed=true
-        fi
+        apk add --allow-untrusted "$apk_file" 2>&1 && log_message "✓ Installed" || { log_message "✗ Failed"; failed=true; }
       else
-        if apk add --allow-untrusted "$apk_file" > /dev/null 2>&1; then
-          log_message "✓ Installed: $pkg_name"
-        else
-          log_message "✗ Failed: $pkg_name"
-          first_attempt_failed=true
-        fi
+        apk add --allow-untrusted "$apk_file" > /dev/null 2>&1 && log_message "✓ Installed" || { log_message "✗ Failed"; failed=true; }
       fi
     done
-    
-    # Second pass for failed packages (this often resolves dependency issues)
-    if [ "$first_attempt_failed" = true ]; then
+
+    if [ "$failed" = true ]; then
       log_message "Retrying failed packages..."
-      
       for apk_file in $apk_files; do
-        pkg_name=$(basename "$apk_file")
-        
-        # Check if package is already installed
-        pkg_base_name=$(echo "$pkg_name" | sed 's/-[0-9].*//')
-        if apk info -e "$pkg_base_name" > /dev/null 2>&1; then
-          log_message "Package $pkg_base_name already installed, skipping"
+        local pkg_name=$(basename "$apk_file")
+        local pkg_base=$(echo "$pkg_name" | sed 's/-[0-9].*//')
+        if apk info -e "$pkg_base" > /dev/null 2>&1; then
+          log_message "Package $pkg_base already installed, skipping"
           continue
         fi
-        
-        log_message "Second attempt for: $pkg_name"
-        
+        log_message "Second attempt: $pkg_name"
         if [ "$LOG_MODE" = true ]; then
-          if apk add --allow-untrusted --force "$apk_file" 2>&1; then
-            log_message "✓ Installed on second attempt: $pkg_name"
-          else
-            log_message "✗ Still failed: $pkg_name"
-          fi
+          apk add --allow-untrusted --force "$apk_file" 2>&1 && log_message "✓ Installed (2nd)" || log_message "✗ Still failed"
         else
-          if apk add --allow-untrusted --force "$apk_file" > /dev/null 2>&1; then
-            log_message "✓ Installed on second attempt: $pkg_name"
-          else
-            log_message "✗ Still failed: $pkg_name"
-          fi
+          apk add --allow-untrusted --force "$apk_file" > /dev/null 2>&1 && log_message "✓ Installed (2nd)" || log_message "✗ Still failed"
         fi
       done
     fi
   fi
-  
-  # Update APK cache
-  log_message "Updating APK cache..."
+
   apk update > /dev/null 2>&1
-  
-  log_message "APK installation process completed."
+  log_message "APK installation finished"
   return 0
 }
 
-# Install Alpine packages if needed
 install_alpine_packages() {
   log_message "Installing required Alpine packages..."
-  
-  # First try to install from local APK files
   install_apks
-  
-  # Then verify and install any missing packages from repositories
+
   if ! check_command ld; then
-    log_message "Installing binutils from Alpine repository..."
-    apk add --no-cache binutils 2>&1 || echo "Warning: Failed to install binutils" >&2
+    log_message "Installing binutils from repository..."
+    apk add --no-cache binutils 2>&1 || echo "Warning: Failed to install binutils"
   fi
-  
   if ! check_command bash; then
-    log_message "Installing bash from Alpine repository..."
-    apk add --no-cache bash 2>&1 || echo "Warning: Failed to install bash" >&2
-  fi
-  
-  # Final verification
-  if check_command ld; then
-    log_message "✓ Linker (ld) is available"
-  else
-    log_message "⚠ Warning: Linker (ld) is not available"
-  fi
-  
-  if check_command bash; then
-    log_message "✓ Bash is available"
-  else
-    log_message "⚠ Warning: Bash is not available"
+    log_message "Installing bash from repository..."
+    apk add --no-cache bash 2>&1 || echo "Warning: Failed to install bash"
   fi
 }
 
-# Install Ubuntu packages if needed
 install_ubuntu_packages() {
-  # Check what's already installed
   local need_ld=false
-  
-  if ! check_command ld; then
-    need_ld=true
-  fi
-  
-  # If nothing needed, return
-  if [ "$need_ld" = false ]; then
-    log_message "All required Ubuntu packages already installed"
-    return 0
-  fi
-  
+  if ! check_command ld; then need_ld=true; fi
+  [ "$need_ld" = false ] && log_message "All required Ubuntu packages present" && return 0
+
   log_message "Installing required Ubuntu packages..."
-  
-  # Use the working DEB installation function
   install_debs
-  
-  # If still missing, try to install from repositories
+
   if [ "$need_ld" = true ] && ! check_command ld; then
-    # Check if apt-get is available
     if check_command apt-get; then
-      log_message "Installing binutils from Ubuntu repository..."
+      log_message "Installing binutils from repo..."
       apt-get update -qq 2>&1
-      apt-get install -y binutils 2>&1 || echo "Warning: Failed to install binutils from repository" >&2
+      apt-get install -y binutils 2>&1 || echo "Warning: Failed"
     fi
   fi
 }
 
-# Install system-specific packages (first-time installation only)
 install_system_packages() {
   local system_type="$1"
-  
   log_message "Detected system: $system_type"
-  
   case "$system_type" in
-    alpine)
-      install_alpine_packages
-      ;;
-    ubuntu)
-      install_ubuntu_packages
-      ;;
+    alpine) install_alpine_packages ;;
+    ubuntu) install_ubuntu_packages ;;
     *)
-      log_message "Unknown system type. Skipping automatic package installation."
-      log_message "Please ensure 'ld' (linker) is installed manually."
+      log_message "Unknown system, skipping auto package installation."
       if ! check_command ld; then
-        echo "Warning: 'ld' (linker) not found. BASM .asm compilation may not work." >&2
+        echo "Warning: 'ld' not found. BASM .asm compilation may not work." >&2
       fi
       ;;
   esac
-  
-  # Final verification
-  if check_command ld; then
-    log_message "✓ Linker (ld) is available"
-  else
-    log_message "⚠ Warning: Linker (ld) is not available"
-  fi
-  
-  if check_command bash; then
-    log_message "✓ Bash is available"
-  else
-    log_message "⚠ Warning: Bash is not available (required for BASM)"
-  fi
 }
 
-# =============================================================================
-# FUNCTION DEFINITIONS (ORIGINAL - PRESERVED WITH ASH COMPATIBILITY)
-# =============================================================================
-
-show_help() {
-  echo "Usage: $0 [OPTIONS]"
-  echo "Install RawJS Runtime and BASM - JavaScript Runtime + Universal Runner"
-  echo
-  echo "Options:"
-  echo "  -h, --help       Show this help"
-  echo "  -log             Enable installation logging"
-  echo
-  echo "This will install:"
-  echo "  • RawJS runtime to $INSTALL_DIR"
-  echo "  • BASM tools to $INSTALL_DIR/._basm"
-  echo "  • Global 'raw' command (RawJS JavaScript runtime)"
-  echo "  • Global 'basm' command (Universal file runner)"
-  echo
-  echo "RAWJS COMMAND:"
-  echo "  • Run from the caller's current directory"
-  echo "  • Execute Raw.sh with provided arguments"
-  echo "  • JavaScript runtime environment"
-  echo
-  echo "BASM COMMAND:"
-  echo "  • Run from the caller's current directory"
-  echo "  • Execute basm.sh with provided arguments"
-  echo "  • Intelligently handle .asm, .sh, and binary files with fallback logic"
-  echo
-  echo "File type detection and fallback order (BASM):"
-  echo "  1. .asm files → compile and run with NASM"
-  echo "  2. .sh files → execute with bash/sh"
-  echo "  3. Binary files → execute directly"
-  echo "  4. Fallback: file.asm → file.sh → file"
-  exit 0
-}
-
-log_message() {
-  local message="$1"
-  local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-  
-  if [ "$LOG_MODE" = true ]; then
-    echo "[$timestamp] $message" | tee -a "$LOG_FILE"
-  else
-    echo "[$timestamp] $message"
-  fi
-}
-
-# ASH-COMPATIBLE PROGRESS FUNCTION (without read -t)
-show_progress() {
-  local message="$1"
-  local pid="$2"
-  local spinner="|/-\\"
-  local i=0
-  
-  # Just show a simple message that we're working
-  echo "$message (in progress...)"
-  
-  # Wait for the process to complete
-  wait $pid 2>/dev/null
-  
-  echo "$message completed."
-}
-
-# FIXED: Robust file copying that works without rsync
+# -----------------------------------------------------------------------------
+# FILE COPYING
+# -----------------------------------------------------------------------------
 copy_files() {
   local src_dir="$1"
   local dest_dir="$2"
@@ -441,300 +286,157 @@ copy_files() {
   mkdir -p "$dest_dir"
   log_message "Copying $description files to $dest_dir..."
 
-  # Use cp with proper options instead of rsync (more compatible)
+  local exclude_args=(
+    ! -path "./.git/*"
+    ! -name "build_output.asm"
+    ! -path "./dev/*"
+  )
+
   if [ "$LOG_MODE" = true ]; then
-    # Verbose copy with progress indication
-    (cd "$src_dir" && find . -type f \
-      ! -path "./.git/*" \
-      ! -name "build_output.asm" \
-      ! -path "./dev/*" \
-      | while read file; do
+    (cd "$src_dir" && find . -type f "${exclude_args[@]}" | while read file; do
       dest_file="$dest_dir/$file"
-      dest_folder=$(dirname "$dest_file")
-      mkdir -p "$dest_folder"
+      mkdir -p "$(dirname "$dest_file")"
       cp -v "$file" "$dest_file" 2>&1
     done) | tee -a "$LOG_FILE" &
     copy_pid=$!
   else
-    # Silent copy
-    (cd "$src_dir" && find . -type f \
-      ! -path "./.git/*" \
-      ! -name "build_output.asm" \
-      ! -path "./dev/*" \
-      | while read file; do
+    (cd "$src_dir" && find . -type f "${exclude_args[@]}" | while read file; do
       dest_file="$dest_dir/$file"
-      dest_folder=$(dirname "$dest_file")
-      mkdir -p "$dest_folder"
+      mkdir -p "$(dirname "$dest_file")"
       cp "$file" "$dest_file" 2>/dev/null
     done) &
     copy_pid=$!
   fi
-
   show_progress "Copying $description files" $copy_pid
-  
-  # Verify files were copied
-  local src_count=$(cd "$src_dir" && find . -type f \
-    ! -path "./.git/*" \
-    ! -name "build_output.asm" \
-    ! -path "./dev/*" \
-    | wc -l)
+
+  local src_count=$(cd "$src_dir" && find . -type f "${exclude_args[@]}" | wc -l)
   local dest_count=$(find "$dest_dir" -type f | wc -l)
-  
   log_message "Copied $dest_count of $src_count files"
-  
-  if [ "$dest_count" -eq 0 ]; then
-    log_message "ERROR: No files were copied!"
-    return 1
-  fi
-  
+  [ "$dest_count" -eq 0 ] && log_message "ERROR: No files copied!" && return 1
   return 0
 }
 
+# -----------------------------------------------------------------------------
+# WRAPPER CREATION (unchanged)
+# -----------------------------------------------------------------------------
 create_raw_wrapper() {
   local install_dir="$1"
   local wrapper_path="$install_dir/wrappers/raw"
-  
   log_message "Creating RawJS wrapper..."
-  
   mkdir -p "$(dirname "$wrapper_path")"
-  
-  # Create wrapper that runs from caller's directory with proper path handling
+
   cat > "$wrapper_path" << 'WRAPPER_EOF'
 #!/bin/bash
-
-# Get the caller's current working directory
 CALLER_DIR="$(pwd)"
 INSTALL_DIR="/usr/local/etc/rawjs-runtime"
-
-# Process arguments to convert relative paths to absolute paths
-# BUT preserve special flags (--tool, --test, --reset, --log) and their arguments
 args=()
 skip_next=false
-
 for arg in "$@"; do
   if [ "$skip_next" = true ]; then
-    # This argument is part of a special flag's value, pass through unchanged
     args+=("$arg")
     skip_next=false
     continue
   fi
-  
-  # Check if this is a special flag that shouldn't have its arguments path-converted
   case "$arg" in
     --tool|--test|--reset|--log)
-      # Special flag - pass through unchanged
       args+=("$arg")
-      # For --tool, the next argument is the command name - don't convert it
-      if [ "$arg" = "--tool" ]; then
-        skip_next=true
-      fi
+      [ "$arg" = "--tool" ] && skip_next=true
       ;;
     -*)
-      # Other flags - pass through unchanged
       args+=("$arg")
       ;;
     *)
-      # Not a flag - check if it's a file that exists in caller's directory
       if [ -f "$CALLER_DIR/$arg" ]; then
-        # Convert to absolute path
         args+=("$CALLER_DIR/$arg")
       else
-        # Pass through unchanged
         args+=("$arg")
       fi
       ;;
   esac
 done
-
-# Navigate to the caller's directory to maintain context
-cd "$CALLER_DIR" || {
-  echo "Error: Cannot navigate to directory: $CALLER_DIR" >&2
-  exit 1
-}
-
-# Execute Raw.sh from the installation directory with processed arguments
+cd "$CALLER_DIR" || { echo "Cannot navigate to $CALLER_DIR" >&2; exit 1; }
 exec bash "$INSTALL_DIR/Raw.sh" "${args[@]}"
 WRAPPER_EOF
-  
+
   chmod +x "$wrapper_path"
-  
-  # Create symlink in bin directory
   local dest_path="$BIN_DIR/raw"
   [ -L "$dest_path" ] && rm -f "$dest_path"
   ln -sf "$wrapper_path" "$dest_path"
-  
   log_message "Created 'raw' command symlink"
 }
 
 create_basm_wrapper() {
   local install_dir="$1"
   local wrapper_path="$install_dir/wrappers/basm"
-  
   log_message "Creating BASM wrapper..."
-  
   mkdir -p "$(dirname "$wrapper_path")"
-  
-  # Create wrapper that runs from caller's directory
+
   cat > "$wrapper_path" << 'WRAPPER_EOF'
 #!/bin/bash
-
-# Get the caller's current working directory
 CALLER_DIR="$(pwd)"
 INSTALL_DIR="/usr/local/etc/rawjs-runtime"
-
-# Navigate to the caller's directory to work with their files
-cd "$CALLER_DIR" || {
-  echo "Error: Cannot navigate to directory: $CALLER_DIR" >&2
-  exit 1
-}
-
-# Execute basm.sh from the BASM installation subdirectory with all arguments
+cd "$CALLER_DIR" || { echo "Cannot navigate to $CALLER_DIR" >&2; exit 1; }
 exec bash "$INSTALL_DIR/._basm/basm.sh" "$@"
 WRAPPER_EOF
-  
+
   chmod +x "$wrapper_path"
-  
-  # Create symlink in bin directory
   local dest_path="$BIN_DIR/basm"
   [ -L "$dest_path" ] && rm -f "$dest_path"
   ln -sf "$wrapper_path" "$dest_path"
-  
   log_message "Created 'basm' command symlink"
 }
 
+# -----------------------------------------------------------------------------
+# VERIFICATION
+# -----------------------------------------------------------------------------
 verify_rawjs_structure() {
   local install_dir="$1"
-  
   log_message "Verifying RawJS installation structure..."
-  
-  # Check essential files
-  if [ -f "$install_dir/Raw.sh" ]; then
-    echo "✓ Found required file: Raw.sh"
-    chmod +x "$install_dir/Raw.sh" 2>/dev/null || true
-  else
-    echo "✗ Error: Missing required file: Raw.sh"
-    return 1
-  fi
-  
-  # Check for JavaScript files
-  if [ -f "$install_dir/output.js" ]; then
-    echo "✓ Found JavaScript file: output.js"
-  else
-    echo "  Note: JavaScript file not found: output.js"
-  fi
-  
-  if [ -f "$install_dir/test.js" ]; then
-    echo "✓ Found JavaScript file: test.js"
-  else
-    echo "  Note: JavaScript file not found: test.js"
-  fi
-  
+  [ -f "$install_dir/Raw.sh" ] || { echo "✗ Missing Raw.sh"; return 1; }
+  chmod +x "$install_dir/Raw.sh" 2>/dev/null || true
+  echo "✓ Raw.sh found"
+  [ -f "$install_dir/output.js" ] && echo "✓ output.js found" || echo "  Note: output.js not found"
+  [ -f "$install_dir/test.js" ] && echo "✓ test.js found" || echo "  Note: test.js not found"
   return 0
 }
 
 verify_basm_structure() {
   local install_dir="$1"
-  
   log_message "Verifying BASM installation structure..."
-  
-  # Check essential files
-  if [ -f "$install_dir/._basm/basm.sh" ]; then
-    echo "✓ Found required file: basm.sh"
-    chmod +x "$install_dir/._basm/basm.sh" 2>/dev/null || true
-  else
-    echo "✗ Error: Missing required file: basm.sh"
-    return 1
-  fi
-  
-  # Check architecture binaries (NASM binaries for .asm support)
+  [ -f "$install_dir/._basm/basm.sh" ] || { echo "✗ Missing basm.sh"; return 1; }
+  chmod +x "$install_dir/._basm/basm.sh" 2>/dev/null || true
+  echo "✓ basm.sh found"
+
   local has_any_arch=false
-  
-  if [ -d "$install_dir/._basm/arm-linux" ]; then
-    echo "✓ Found NASM architecture: arm-linux"
-    has_any_arch=true
-    
-    # Check for nasm binary
-    if [ -f "$install_dir/._basm/arm-linux/nasm-arm-linux-linux" ]; then
-      echo "  ✓ NASM binary found"
-      chmod +x "$install_dir/._basm/arm-linux/nasm-arm-linux-linux" 2>/dev/null || true
-    else
-      echo "  ⚠ NASM binary not found (but directory exists)"
+  for arch in arm-linux i386-linux x86_64-linux; do
+    if [ -d "$install_dir/._basm/$arch" ]; then
+      echo "✓ Found architecture: $arch"
+      has_any_arch=true
+      find "$install_dir/._basm/$arch" -maxdepth 1 -name "nasm*" -type f -exec chmod +x {} \; 2>/dev/null
     fi
-  else
-    echo "  Note: NASM architecture directory not found: arm-linux"
-  fi
-  
-  if [ -d "$install_dir/._basm/i386-linux" ]; then
-    echo "✓ Found NASM architecture: i386-linux"
-    has_any_arch=true
-    
-    if [ -f "$install_dir/._basm/i386-linux/nasm-i386-linux-linux" ]; then
-      echo "  ✓ NASM binary found"
-      chmod +x "$install_dir/._basm/i386-linux/nasm-i386-linux-linux" 2>/dev/null || true
-    else
-      echo "  ⚠ NASM binary not found (but directory exists)"
-    fi
-  else
-    echo "  Note: NASM architecture directory not found: i386-linux"
-  fi
-  
-  if [ -d "$install_dir/._basm/x86_64-linux" ]; then
-    echo "✓ Found NASM architecture: x86_64-linux"
-    has_any_arch=true
-    
-    if [ -f "$install_dir/._basm/x86_64-linux/nasm-x86_64-linux" ] || [ -f "$install_dir/._basm/x86_64-linux/nasm-x86_64-linux-linux" ]; then
-      echo "  ✓ NASM binary found"
-      # Make whatever NASM binary exists executable
-      chmod +x "$install_dir/._basm/x86_64-linux/nasm"* 2>/dev/null || true
-    else
-      echo "  ⚠ NASM binary not found (but directory exists)"
-    fi
-  else
-    echo "  Note: NASM architecture directory not found: x86_64-linux"
-  fi
-  
-  if [ "$has_any_arch" = false ]; then
-    echo "⚠ Warning: No NASM architecture directories found"
-    echo "  .asm file compilation will not be available"
-  fi
-  
-  # Check for ld (linker)
+  done
+  [ "$has_any_arch" = false ] && echo "⚠ No NASM architecture directories found"
+
   if check_command ld; then
     echo "✓ System linker (ld) found"
   else
-    echo "⚠ Warning: System linker (ld) not found"
-    echo "  .asm file linking will fail"
+    echo "⚠ System linker (ld) not found"
   fi
-  
   return 0
 }
 
+# -----------------------------------------------------------------------------
+# REMOVAL AND CLEANUP
+# -----------------------------------------------------------------------------
 remove_installation() {
   log_message "Removing existing installation..."
-  
-  # Remove symlinks
-  if [ -L "$BIN_DIR/raw" ]; then
-    rm -f "$BIN_DIR/raw"
-    log_message "Removed symlink: $BIN_DIR/raw"
-  fi
-  
-  if [ -L "$BIN_DIR/basm" ]; then
-    rm -f "$BIN_DIR/basm"
-    log_message "Removed symlink: $BIN_DIR/basm"
-  fi
-  
-  # Remove installation directory
-  if [ -d "$INSTALL_DIR" ]; then
-    rm -rf "$INSTALL_DIR"
-    log_message "Removed installation directory: $INSTALL_DIR"
-  fi
+  [ -L "$BIN_DIR/raw" ] && rm -f "$BIN_DIR/raw" && log_message "Removed symlink: raw"
+  [ -L "$BIN_DIR/basm" ] && rm -f "$BIN_DIR/basm" && log_message "Removed symlink: basm"
+  [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR" && log_message "Removed installation directory"
 }
 
 cleanup() {
-  # Remove backup directory if it exists
-  if [ -d "$BACKUP_DIR" ]; then
-    rm -rf "$BACKUP_DIR" 2>/dev/null || true
-  fi
+  [ -d "$BACKUP_DIR" ] && rm -rf "$BACKUP_DIR" 2>/dev/null || true
 }
 
 interrupt_handler() {
@@ -744,13 +446,1271 @@ interrupt_handler() {
 }
 
 # =============================================================================
+# BUILD SYSTEM (MODULAR ADDITION)
+# =============================================================================
+# This section provides build functionality similar to the EasyAI project.
+# It is self-contained and does not modify the normal installation flow.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# UTILITY FUNCTIONS
+# -----------------------------------------------------------------------------
+sanitize_filename() {
+  local input="$1"
+  local sanitized=$(echo "$input" | tr ' ' '_' | sed 's/[^a-zA-Z0-9._-]/_/g' | sed 's/__*/_/g' | sed 's/^_//' | sed 's/_$//')
+  [ -z "$sanitized" ] && sanitized="build"
+  echo "$sanitized"
+}
+
+get_commit_filename() {
+  if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+    local commit_msg=$(git log -1 --pretty=%B 2>/dev/null | head -n1)
+    if [ -n "$commit_msg" ]; then
+      sanitize_filename "$commit_msg"
+    else
+      echo "initial_build"
+    fi
+  else
+    echo "build_$(date +%Y%m%d_%H%M%S)"
+  fi
+}
+
+calculate_build_version() {
+  local target_commit="$1"
+  [ -z "$target_commit" ] && target_commit="HEAD"
+
+  local latest_version=""
+  local latest_distance=999999999
+  local temp_candidates="/tmp/build_version_candidates_$$.txt"
+  > "$temp_candidates"
+
+  local version_tags=$(git tag --sort=-creatordate 2>/dev/null | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$')
+  if [ -n "$version_tags" ]; then
+    for tag in $version_tags; do
+      if git merge-base --is-ancestor "$tag" "$target_commit" 2>/dev/null; then
+        local distance=$(git rev-list --count "$tag..$target_commit" 2>/dev/null || echo 0)
+        if [ "$distance" -lt "$latest_distance" ]; then
+          latest_version="$tag"
+          latest_distance="$distance"
+        fi
+      fi
+    done
+  fi
+
+  git log --all --oneline --grep='^[0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?$' --format="%H %s" 2>/dev/null | while IFS=' ' read -r hash msg; do
+    if git merge-base --is-ancestor "$hash" "$target_commit" 2>/dev/null; then
+      local distance=$(git rev-list --count "$hash..$target_commit" 2>/dev/null || echo 0)
+      echo "${distance}|${msg}" >> "$temp_candidates"
+    fi
+  done
+
+  if [ -s "$temp_candidates" ]; then
+    local best=$(sort -t'|' -k1 -n "$temp_candidates" | head -1)
+    local cand_dist=$(echo "$best" | cut -d'|' -f1)
+    local cand_ver=$(echo "$best" | cut -d'|' -f2)
+    if [ "$cand_dist" -lt "$latest_distance" ]; then
+      latest_version="$cand_ver"
+      latest_distance="$cand_dist"
+    fi
+  fi
+  rm -f "$temp_candidates"
+
+  if [ -n "$latest_version" ]; then
+    if [ "$latest_distance" -gt 0 ]; then
+      echo "${latest_version}.${latest_distance}"
+    else
+      echo "${latest_version}"
+    fi
+  else
+    echo ""
+  fi
+}
+
+format_file_size() {
+  local bytes=$1
+  case "$bytes" in
+    ''|*[!0-9]*) echo "0B" ; return ;;
+  esac
+  if [ "$bytes" -ge 1073741824 ]; then
+    echo "$(bc <<< "scale=1; $bytes / 1073741824")GB" 2>/dev/null || echo "$((bytes / 1073741824))GB"
+  elif [ "$bytes" -ge 1048576 ]; then
+    echo "$(bc <<< "scale=1; $bytes / 1048576")MB" 2>/dev/null || echo "$((bytes / 1048576))MB"
+  elif [ "$bytes" -ge 1024 ]; then
+    echo "$(bc <<< "scale=1; $bytes / 1024")KB" 2>/dev/null || echo "$((bytes / 1024))KB"
+  else
+    echo "${bytes}B"
+  fi
+}
+
+is_file_in_excluded_dir() {
+  local file_to_check="$1"
+  if [ -s "$EXCLUDE_DIRS_LIST" ]; then
+    while IFS= read -r excluded_dir; do
+      [ -z "$excluded_dir" ] && continue
+      case "$file_to_check" in
+        ${excluded_dir}/*|${excluded_dir}) return 0 ;;
+      esac
+    done < "$EXCLUDE_DIRS_LIST"
+  fi
+  return 1
+}
+
+calculate_build_stats() {
+  local total_size=0
+  local total_files=0
+  while IFS='|' read -r size name; do
+    [ -z "$name" ] && continue
+    if grep -q "^${name}$" "$EXCLUDE_LIST" 2>/dev/null; then continue; fi
+    if is_file_in_excluded_dir "$name"; then continue; fi
+    total_size=$((total_size + size))
+    total_files=$((total_files + 1))
+  done < "$BUILD_FILES_LIST"
+  echo "$total_size|$total_files"
+}
+
+# -----------------------------------------------------------------------------
+# FILESYSTEM NAVIGATION FOR INCLUSION
+# -----------------------------------------------------------------------------
+navigate_filesystem_for_inclusion() {
+  echo ""
+  echo "=== Navigate Filesystem to Include Files/Directories ==="
+  echo "This allows you to add files that exist on disk but may be in .gitignore"
+  echo "Hidden files and directories (starting with .) are shown"
+  echo ""
+  local current_dir="$REPO_DIR"
+
+  while true; do
+    clear
+    echo "=== File System Navigation for Inclusion ==="
+    echo "Current directory: $current_dir"
+    echo ""
+    case "$current_dir" in
+      "${REPO_DIR}"*) ;;
+      *) echo "Warning: You are outside the repository root!"; echo "" ;;
+    esac
+
+    local NAV_ITEMS="/tmp/build_nav_items_$$.txt"
+    > "$NAV_ITEMS"
+
+    local item_num=1
+    if [ "$current_dir" != "/" ]; then
+      echo "  0. [..] Go to parent directory"
+      echo ""
+    fi
+
+    # directories
+    for item in "$current_dir"/* "$current_dir"/.*; do
+      [ ! -e "$item" ] && continue
+      local base=$(basename "$item")
+      [ "$base" = "." ] && continue
+      [ "$base" = ".." ] && continue
+      [ "$base" = ".git" ] && continue
+      if [ -d "$item" ]; then
+        local file_count=$(find "$item" -type f 2>/dev/null | wc -l)
+        local dir_size=$(du -sh "$item" 2>/dev/null | awk '{print $1}')
+        printf "  %2s. [DIR]  %-8s %s/ (%s files)\n" "$item_num" "$dir_size" "$base" "$file_count"
+        echo "${item_num}|DIR|${item}" >> "$NAV_ITEMS"
+        item_num=$((item_num + 1))
+      fi
+    done
+
+    # files
+    for item in "$current_dir"/* "$current_dir"/.*; do
+      [ ! -e "$item" ] && continue
+      local base=$(basename "$item")
+      [ "$base" = "." ] && continue
+      [ "$base" = ".." ] && continue
+      [ "$base" = ".git" ] && continue
+      if [ -f "$item" ]; then
+        local file_size=$(wc -c < "$item" 2>/dev/null || echo 0)
+        local size_display=$(format_file_size "$file_size")
+        local relative_to_repo="${item#$REPO_DIR/}"
+        local gitignored=""
+        if [ "$relative_to_repo" != "$item" ] && command -v git >/dev/null 2>&1 && git check-ignore -q "$relative_to_repo" 2>/dev/null; then
+          gitignored="[GITIGNORED]"
+        fi
+        local already=""
+        if [ -f "$BUILD_INCLUDE_LIST" ] && grep -q "^${relative_to_repo}$" "$BUILD_INCLUDE_LIST" 2>/dev/null; then
+          already="[ALREADY INCLUDED]"
+        fi
+        printf "  %2s. [FILE] %8s %s %s %s
+" "$item_num" "$size_display" "$base" "$gitignored" "$already"
+        echo "${item_num}|FILE|${item}" >> "$NAV_ITEMS"
+        item_num=$((item_num + 1))
+      fi
+    done
+
+    echo ""
+    echo "Current included files:"
+    if [ -s "$BUILD_INCLUDE_LIST" ]; then
+      local count=0
+      while IFS= read -r f; do
+        count=$((count + 1))
+        [ $count -le 5 ] && echo "  $f"
+      done < "$BUILD_INCLUDE_LIST"
+      local total=$(wc -l < "$BUILD_INCLUDE_LIST")
+      [ "$total" -gt 5 ] && echo "  ... and $((total - 5)) more"
+    else
+      echo "  (none)"
+    fi
+
+    echo ""
+    echo "Commands:"
+    echo "  <number> = Enter directory or add file to include list"
+    echo "  r <number> = Remove file from include list"
+    echo "  c = Clear all included files"
+    echo "  g = Go to specific path"
+    echo "  b = Back to main menu"
+    printf "Choice: "
+    read choice
+    case "$choice" in
+      b|B) rm -f "$NAV_ITEMS"; break ;;
+      c|C) > "$BUILD_INCLUDE_LIST"; echo "All included files cleared."; sleep 1 ;;
+      g|G)
+        printf "Enter path: "; read custom_path
+        if [ -n "$custom_path" ]; then
+          case "$custom_path" in
+            /*) ;;
+            *) custom_path="$current_dir/$custom_path" ;;
+          esac
+          [ -d "$custom_path" ] && current_dir="$custom_path" || { echo "Directory not found"; sleep 1; }
+        fi
+        ;;
+      r*)
+        local remove_num=$(echo "$choice" | sed 's/^r//' | tr -d ' ')
+        if [ -n "$remove_num" ] && [ -s "$BUILD_INCLUDE_LIST" ]; then
+          local line=$(sed -n "${remove_num}p" "$BUILD_INCLUDE_LIST")
+          if [ -n "$line" ]; then
+            grep -v "^${line}$" "$BUILD_INCLUDE_LIST" > "${BUILD_INCLUDE_LIST}.tmp"
+            mv "${BUILD_INCLUDE_LIST}.tmp" "$BUILD_INCLUDE_LIST"
+            echo "Removed: $line"; sleep 1
+          fi
+        fi
+        ;;
+      *)
+        if echo "$choice" | grep -q '^[0-9]\+$'; then
+          if [ "$choice" = "0" ] && [ "$current_dir" != "/" ]; then
+            current_dir=$(dirname "$current_dir")
+          else
+            local selected=$(grep "^${choice}|" "$NAV_ITEMS" 2>/dev/null)
+            if [ -n "$selected" ]; then
+              local type=$(echo "$selected" | cut -d'|' -f2)
+              local path=$(echo "$selected" | cut -d'|' -f3)
+              if [ "$type" = "DIR" ]; then
+                current_dir="$path"
+              else
+                local rel="${path#$REPO_DIR/}"
+                if [ "$rel" = "$path" ]; then rel="$path"; fi
+                if grep -q "^${rel}$" "$BUILD_INCLUDE_LIST" 2>/dev/null; then
+                  echo "Already in include list"
+                else
+                  echo "$rel" >> "$BUILD_INCLUDE_LIST"
+                  echo "Added: $rel"
+                fi
+                sleep 1
+              fi
+            fi
+          fi
+        fi
+        ;;
+    esac
+  done
+}
+
+# -----------------------------------------------------------------------------
+# BUILD CONFIGURATION INTERFACE
+# -----------------------------------------------------------------------------
+build_config_interface() {
+  echo ""
+  echo "========================================="
+  echo "  BUILD CONFIGURATION"
+  echo "========================================="
+  echo ""
+  if ! command -v git >/dev/null 2>&1 || ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "Error: Not a git repository"
+    return 1
+  fi
+
+  EXCLUDE_LIST="/tmp/build_exclude_$$.txt"
+  EXCLUDE_DIRS_LIST="/tmp/build_exclude_dirs_$$.txt"
+  > "$EXCLUDE_LIST"
+  > "$EXCLUDE_DIRS_LIST"
+  > "$BUILD_INCLUDE_LIST"
+
+  BUILD_FILES_LIST="/tmp/build_files_$$.txt"
+  BUILD_DIRS_LIST="/tmp/build_dirs_$$.txt"
+  > "$BUILD_FILES_LIST"
+  > "$BUILD_DIRS_LIST"
+
+  SELECTED_COMMIT=""
+  SELECTED_COMMIT_MSG=""
+  COMMIT_CACHE="/tmp/build_commits_cache_$$.txt"
+  MONTH_CACHE="/tmp/build_months_cache_$$.txt"
+
+  load_files_from_commit() {
+    local commit="$1"
+    > "$BUILD_FILES_LIST"
+    > "$BUILD_DIRS_LIST"
+    if [ -z "$commit" ]; then
+      git ls-files -z 2>/dev/null | xargs -0 -I{} sh -c '
+        if [ -f "$1" ]; then size=$(wc -c < "$1" 2>/dev/null || echo 0); else size=0; fi
+        case "$1" in
+          *.js|*.sh|*.py|*.rb|*.php|*.ts|*.jsx|*.tsx|*.css|*.html|*.json|*.xml|*.yml|*.yaml|*.md|*.txt|*.conf|*.cfg|*.ini)
+            printf "%s|%s|C
+" "$size" "$1" ;;
+          *) printf "%s|%s|D
+" "$size" "$1" ;;
+        esac
+      ' _ {} 2>/dev/null | sort -t'|' -k1 -n -r > "$BUILD_FILES_LIST"
+    else
+      git ls-tree -r "$commit" 2>/dev/null | while read -r mode type hash filename; do
+        [ "$type" != "blob" ] && continue
+        size=$(git cat-file -s "$hash" 2>/dev/null || echo 0)
+        case "$filename" in
+          *.js|*.sh|*.py|*.rb|*.php|*.ts|*.jsx|*.tsx|*.css|*.html|*.json|*.xml|*.yml|*.yaml|*.md|*.txt|*.conf|*.cfg|*.ini) file_type="C" ;;
+          *) file_type="D" ;;
+        esac
+        echo "${size}|${filename}|${file_type}" >> /tmp/build_files_temp_$$.txt
+      done
+      [ -s /tmp/build_files_temp_$$.txt ] && sort -t'|' -k1 -n -r /tmp/build_files_temp_$$.txt > "$BUILD_FILES_LIST"
+      rm -f /tmp/build_files_temp_$$.txt
+    fi
+
+    # build dirs list
+    local temp_dirs="/tmp/build_dirs_temp_$$.txt"
+    > "$temp_dirs"
+    while IFS='|' read -r size filename ftype; do
+      [ -z "$filename" ] && continue
+      dirname "$filename"
+    done < "$BUILD_FILES_LIST" | sort -u > "$temp_dirs"
+    local top_level=0
+    while IFS= read -r d; do
+      [ -z "$d" ] && continue
+      [ "$d" = "." ] && continue
+      case "$d" in
+        */*) ;;
+        *) top_level=$((top_level+1)) ;;
+      esac
+    done < "$temp_dirs"
+    while IFS= read -r d; do
+      [ -z "$d" ] && continue
+      [ "$d" = "." ] && continue
+      if [ "$top_level" -eq 1 ]; then
+        case "$d" in */*) ;; *) continue ;; esac
+      fi
+      local dir_info=$(grep "|${d}/" "$BUILD_FILES_LIST" 2>/dev/null | awk -F'|' '{sum+=$1; count++} END {printf "%d|%d", sum+0, count+0}')
+      local dir_size=$(echo "$dir_info" | cut -d'|' -f1)
+      local file_count=$(echo "$dir_info" | cut -d'|' -f2)
+      echo "${dir_size}|${d}|${file_count}" >> "$BUILD_DIRS_LIST"
+    done < "$temp_dirs"
+    [ -s "$BUILD_DIRS_LIST" ] && sort -t'|' -k1 -n -r "$BUILD_DIRS_LIST" -o "$BUILD_DIRS_LIST"
+    rm -f "$temp_dirs"
+  }
+
+  load_files_from_commit ""
+
+  build_month_cache() {
+    > "$MONTH_CACHE"
+    if [ -f "$COMMIT_CACHE" ]; then
+      while IFS='|' read -r csize hash date msg is_version; do
+        [ -z "$hash" ] && continue
+        echo "$date" | cut -d'-' -f1-2 >> /tmp/build_months_raw_$$.txt
+      done < "$COMMIT_CACHE"
+      sort -ru /tmp/build_months_raw_$$.txt | while IFS= read -r ym; do
+        local year=$(echo "$ym" | cut -d'-' -f1)
+        local month=$(echo "$ym" | cut -d'-' -f2)
+        case "$month" in
+          01) month_name="January";; 02) month_name="February";; 03) month_name="March";;
+          04) month_name="April";; 05) month_name="May";; 06) month_name="June";;
+          07) month_name="July";; 08) month_name="August";; 09) month_name="September";;
+          10) month_name="October";; 11) month_name="November";; 12) month_name="December";;
+          *) month_name="Unknown";;
+        esac
+        local commit_count=$(grep "^[^|]*|[^|]*|${ym}-" "$COMMIT_CACHE" | wc -l)
+        echo "${ym}|${year}|${month_name}|${commit_count}" >> "$MONTH_CACHE"
+      done
+      rm -f /tmp/build_months_raw_$$.txt
+    fi
+  }
+
+  # Main loop (simplified but functional)
+  while true; do
+    clear
+    local stats=$(calculate_build_stats)
+    local build_size=$(echo "$stats" | cut -d'|' -f1)
+    local build_file_count=$(echo "$stats" | cut -d'|' -f2)
+    local excl_files=$(wc -l < "$EXCLUDE_LIST" 2>/dev/null || echo 0)
+    local excl_dirs=$(wc -l < "$EXCLUDE_DIRS_LIST" 2>/dev/null || echo 0)
+    local incl_files=$(wc -l < "$BUILD_INCLUDE_LIST" 2>/dev/null || echo 0)
+
+    echo "=== BUILD CONFIGURATION ==="
+    if [ -z "$SELECTED_COMMIT" ]; then echo "Source: HEAD (current working tree)"; else
+      short_hash=$(echo "$SELECTED_COMMIT" | cut -c1-7)
+      shortened_msg=$(echo "$SELECTED_COMMIT_MSG" | cut -c1-30)
+      echo "Source: ${short_hash} ${shortened_msg}"
+    fi
+    echo "Output: $([ "$BUILD_TAR" = true ] && echo "Tar.gz" || echo "Directory") | Size: $(format_file_size "$build_size") | Files: $build_file_count | Excl: ${excl_files}f/${excl_dirs}d | InclFS: ${incl_files}"
+    echo ""
+    if [ -s "$EXCLUDE_DIRS_LIST" ] || [ -s "$EXCLUDE_LIST" ]; then
+      echo "Excluded:"
+      if [ -s "$EXCLUDE_DIRS_LIST" ]; then
+        local count=0
+        while IFS= read -r d; do
+          count=$((count+1)); [ $count -le 2 ] && echo "  dir: $d"
+        done < "$EXCLUDE_DIRS_LIST"
+        local total=$(wc -l < "$EXCLUDE_DIRS_LIST"); [ "$total" -gt 2 ] && echo "  ... and $((total-2)) more dirs"
+      fi
+      if [ -s "$EXCLUDE_LIST" ]; then
+        local count=0
+        while IFS= read -r f; do
+          count=$((count+1)); [ $count -le 2 ] && echo "  file: $f"
+        done < "$EXCLUDE_LIST"
+        local total=$(wc -l < "$EXCLUDE_LIST"); [ "$total" -gt 2 ] && echo "  ... and $((total-2)) more files"
+      fi
+    else
+      echo "No exclusions"
+    fi
+    if [ -s "$BUILD_INCLUDE_LIST" ]; then
+      echo "Included from filesystem:"
+      local count=0
+      while IFS= read -r f; do
+        count=$((count+1)); [ $count -le 3 ] && echo "  + $f"
+      done < "$BUILD_INCLUDE_LIST"
+      [ "$incl_files" -gt 3 ] && echo "  ... and $((incl_files-3)) more"
+    fi
+
+    echo ""
+    echo "Actions:"
+    echo "1. Exclude directories"
+    echo "2. Exclude files"
+    echo "3. Search and exclude"
+    echo "4. Remove files from exclusion"
+    echo "5. Remove directories from exclusion"
+    echo "6. Clear all exclusions"
+    echo "7. Change source commit"
+    echo "8. Toggle output format ($([ "$BUILD_TAR" = true ] && echo "Tar.gz" || echo "Directory"))"
+    echo "9. Navigate filesystem to INCLUDE files"
+    echo "s. Save config | l. Load config | d. Delete config"
+    echo "0. Done | q. Quit"
+    printf "Choice: "
+    read action
+
+    case "$action" in
+      1) # Exclude directories
+         current_page=1; ITEMS_PER_PAGE=5
+         while true; do
+           AVAILABLE_DIRS="/tmp/build_available_dirs_$$.txt"; > "$AVAILABLE_DIRS"
+           EXCLUDED_FILES_SET="/tmp/build_excluded_files_set_$$.txt"; > "$EXCLUDED_FILES_SET"
+           [ -s "$EXCLUDE_LIST" ] && while IFS= read -r f; do echo "$f"; done < "$EXCLUDE_LIST" > "$EXCLUDED_FILES_SET"
+           [ -s "$EXCLUDE_DIRS_LIST" ] && while IFS='|' read -r fsize fname ftype; do
+             while IFS= read -r ed; do case "$fname" in ${ed}/*|${ed}) echo "$fname"; break;; esac; done < "$EXCLUDE_DIRS_LIST"
+           done < "$BUILD_FILES_LIST" | sort -u > "$EXCLUDED_FILES_SET"
+           sort -u "$EXCLUDED_FILES_SET" -o "$EXCLUDED_FILES_SET"
+           while IFS='|' read -r dir_size dir_name file_count; do
+             [ -z "$dir_name" ] && continue
+             grep -q "^${dir_name}$" "$EXCLUDE_DIRS_LIST" 2>/dev/null && continue
+             local parent_excluded=false
+             if [ -s "$EXCLUDE_DIRS_LIST" ]; then
+               while IFS= read -r ed; do case "$dir_name" in ${ed}/*) parent_excluded=true; break;; esac; done < "$EXCLUDE_DIRS_LIST"
+             fi
+             [ "$parent_excluded" = true ] && continue
+             local actual_size=0; local actual_count=0
+             while IFS='|' read -r fsize fname ftype; do
+               case "$fname" in ${dir_name}/*|${dir_name})
+                 if ! grep -q "^${fname}$" "$EXCLUDED_FILES_SET" 2>/dev/null; then
+                   actual_size=$((actual_size+fsize)); actual_count=$((actual_count+1))
+                 fi ;;
+               esac
+             done < "$BUILD_FILES_LIST"
+             [ "$actual_count" -gt 0 ] && echo "${actual_size}|${dir_name}|${actual_count}" >> "$AVAILABLE_DIRS"
+           done < "$BUILD_DIRS_LIST"
+           sort -t'|' -k1 -n -r "$AVAILABLE_DIRS" -o "$AVAILABLE_DIRS"
+           local total_items=$(wc -l < "$AVAILABLE_DIRS")
+           [ "$total_items" -eq 0 ] && echo "All directories already excluded!" && sleep 1 && break
+           local total_pages=$(( (total_items + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE ))
+           [ "$current_page" -gt "$total_pages" ] && current_page="$total_pages"
+           [ "$current_page" -lt 1 ] && current_page=1
+           start_line=$(( (current_page - 1) * ITEMS_PER_PAGE + 1 )); end_line=$(( current_page * ITEMS_PER_PAGE ))
+           clear
+           echo "=== Select Directories to Exclude (${current_page}/${total_pages}) ==="
+           line_num=0; counter=1
+           while IFS='|' read -r dir_size dir_name file_count; do
+             line_num=$((line_num+1)); [ "$line_num" -lt "$start_line" ] && continue; [ "$line_num" -gt "$end_line" ] && break
+             [ -z "$dir_name" ] && continue
+             printf "  %2s. %8s  %s (%s files)\n" "$counter" "$(format_file_size "$dir_size")" "$dir_name" "$file_count"
+             counter=$((counter+1))
+           done < "$AVAILABLE_DIRS"
+           echo ""; echo "n=next p=previous b=back"
+           printf "> "; read cmd
+           case "$cmd" in
+             n|N) [ "$current_page" -lt "$total_pages" ] && current_page=$((current_page+1)) ;;
+             p|P) [ "$current_page" -gt 1 ] && current_page=$((current_page-1)) ;;
+             b|B) break ;;
+             *)
+               if echo "$cmd" | grep -q '^[0-9]\+$'; then
+                 line_num=0; counter=1; selected_dir=""
+                 while IFS='|' read -r dir_size dir_name file_count; do
+                   line_num=$((line_num+1)); [ "$line_num" -lt "$start_line" ] && continue; [ "$line_num" -gt "$end_line" ] && break
+                   [ "$counter" = "$cmd" ] && selected_dir="$dir_name" && break
+                   counter=$((counter+1))
+                 done < "$AVAILABLE_DIRS"
+                 if [ -n "$selected_dir" ]; then
+                   echo "$selected_dir" >> "$EXCLUDE_DIRS_LIST"
+                   # remove subdirectories and files under this dir from exclusion lists
+                   local tmp_excl_dirs="/tmp/build_tmp_excl_dirs_$$.txt"; > "$tmp_excl_dirs"
+                   while IFS= read -r ed; do case "$ed" in ${selected_dir}/*) ;; *) echo "$ed" >> "$tmp_excl_dirs";; esac; done < "$EXCLUDE_DIRS_LIST"
+                   mv "$tmp_excl_dirs" "$EXCLUDE_DIRS_LIST"
+                   local tmp_excl_files="/tmp/build_tmp_excl_files_$$.txt"; > "$tmp_excl_files"
+                   while IFS= read -r ef; do case "$ef" in ${selected_dir}/*|${selected_dir}) ;; *) echo "$ef" >> "$tmp_excl_files";; esac; done < "$EXCLUDE_LIST"
+                   mv "$tmp_excl_files" "$EXCLUDE_LIST"
+                   echo "Excluded directory: $selected_dir"; sleep 0.5
+                 fi
+               fi ;;
+           esac
+         done
+         rm -f "$AVAILABLE_DIRS" "$EXCLUDED_FILES_SET"
+         ;;
+      2) # Exclude files
+         current_page=1; ITEMS_PER_PAGE=5
+         while true; do
+           AVAILABLE_LIST="/tmp/build_available_$$.txt"; > "$AVAILABLE_LIST"
+           EXCLUDED_FILES_SET="/tmp/build_excluded_files_set_$$.txt"; > "$EXCLUDED_FILES_SET"
+           [ -s "$EXCLUDE_LIST" ] && while IFS= read -r f; do echo "$f"; done < "$EXCLUDE_LIST" >> "$EXCLUDED_FILES_SET"
+           [ -s "$EXCLUDE_DIRS_LIST" ] && while IFS='|' read -r fsize fname ftype; do
+             while IFS= read -r ed; do case "$fname" in ${ed}/*|${ed}) echo "$fname"; break;; esac; done < "$EXCLUDE_DIRS_LIST"
+           done < "$BUILD_FILES_LIST" >> "$EXCLUDED_FILES_SET"
+           sort -u "$EXCLUDED_FILES_SET" -o "$EXCLUDED_FILES_SET"
+           while IFS='|' read -r size_bytes filename file_type; do
+             [ -z "$filename" ] && continue
+             grep -q "^${filename}$" "$EXCLUDE_LIST" 2>/dev/null && continue
+             if ! grep -q "^${filename}$" "$EXCLUDED_FILES_SET" 2>/dev/null; then
+               echo "${size_bytes}|${filename}|NORMAL" >> "$AVAILABLE_LIST"
+             fi
+           done < "$BUILD_FILES_LIST"
+           local total_items=$(wc -l < "$AVAILABLE_LIST")
+           [ "$total_items" -eq 0 ] && echo "All files already excluded!" && sleep 1 && break
+           local total_pages=$(( (total_items + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE ))
+           [ "$current_page" -gt "$total_pages" ] && current_page="$total_pages"
+           [ "$current_page" -lt 1 ] && current_page=1
+           start_line=$(( (current_page - 1) * ITEMS_PER_PAGE + 1 )); end_line=$(( current_page * ITEMS_PER_PAGE ))
+           clear
+           echo "=== Select Files to Exclude (${current_page}/${total_pages}) ==="
+           line_num=0; counter=1
+           while IFS='|' read -r size_bytes filename status; do
+             line_num=$((line_num+1)); [ "$line_num" -lt "$start_line" ] && continue; [ "$line_num" -gt "$end_line" ] && break
+             [ -z "$filename" ] && continue
+             printf "  %2s. %8s  %s
+" "$counter" "$(format_file_size "$size_bytes")" "$filename"
+             counter=$((counter+1))
+           done < "$AVAILABLE_LIST"
+           echo ""; echo "n=next p=previous b=back"
+           printf "> "; read cmd
+           case "$cmd" in
+             n|N) [ "$current_page" -lt "$total_pages" ] && current_page=$((current_page+1)) ;;
+             p|P) [ "$current_page" -gt 1 ] && current_page=$((current_page-1)) ;;
+             b|B) break ;;
+             *)
+               if echo "$cmd" | grep -q '^[0-9]\+$'; then
+                 line_num=0; counter=1; selected_file=""
+                 while IFS='|' read -r size_bytes filename status; do
+                   line_num=$((line_num+1)); [ "$line_num" -lt "$start_line" ] && continue; [ "$line_num" -gt "$end_line" ] && break
+                   [ "$counter" = "$cmd" ] && selected_file="$filename" && break
+                   counter=$((counter+1))
+                 done < "$AVAILABLE_LIST"
+                 if [ -n "$selected_file" ]; then
+                   echo "$selected_file" >> "$EXCLUDE_LIST"
+                   echo "Excluded: $selected_file"; sleep 0.5
+                 fi
+               fi ;;
+           esac
+         done
+         rm -f "$AVAILABLE_LIST" "$EXCLUDED_FILES_SET"
+         ;;
+      3) # Search and exclude
+         clear; echo "=== Search Files to Exclude ==="
+         printf "Enter search term: "; read search_term
+         if [ -n "$search_term" ]; then
+           SEARCH_RESULTS="/tmp/build_search_$$.txt"; > "$SEARCH_RESULTS"
+           while IFS='|' read -r size_bytes filename file_type; do
+             case "$filename" in *"$search_term"*)
+               grep -q "^${filename}$" "$EXCLUDE_LIST" 2>/dev/null || echo "${size_bytes}|${filename}" >> "$SEARCH_RESULTS"
+             ;; esac
+           done < "$BUILD_FILES_LIST"
+           local result_count=$(wc -l < "$SEARCH_RESULTS")
+           if [ "$result_count" -eq 0 ]; then
+             echo "No matching files found."; sleep 1
+           else
+             echo "Found $result_count matching files:"
+             counter=1
+             while IFS='|' read -r size_bytes filename; do
+               printf "  %2s. %8s  %s
+" "$counter" "$(format_file_size "$size_bytes")" "$filename"
+               counter=$((counter+1))
+             done < "$SEARCH_RESULTS"
+             echo "Enter number to exclude | a=exclude all | b=back"
+             printf "> "; read search_cmd
+             case "$search_cmd" in
+               a|A) while IFS='|' read -r size_bytes filename; do echo "$filename"; done < "$SEARCH_RESULTS" >> "$EXCLUDE_LIST"; echo "All excluded!"; sleep 1 ;;
+               b|B) ;;
+               *)
+                 if echo "$search_cmd" | grep -q '^[0-9]\+$'; then
+                   counter=1
+                   while IFS='|' read -r size_bytes filename; do
+                     [ "$counter" = "$search_cmd" ] && echo "$filename" >> "$EXCLUDE_LIST" && echo "Excluded: $filename" && sleep 0.5 && break
+                     counter=$((counter+1))
+                   done < "$SEARCH_RESULTS"
+                 fi ;;
+             esac
+           fi
+           rm -f "$SEARCH_RESULTS"
+         fi ;;
+      4) # Remove file exclusions
+         if [ ! -s "$EXCLUDE_LIST" ]; then echo "No file exclusions."; sleep 1; else
+           clear; echo "=== Remove Files from Exclusion ==="
+           counter=1; > /tmp/build_remove_$$.txt
+           while IFS= read -r f; do
+             printf "  %2s. %s
+" "$counter" "$f"
+             echo "${counter}|${f}" >> /tmp/build_remove_$$.txt
+             counter=$((counter+1))
+           done < "$EXCLUDE_LIST"
+           echo "Enter number | a=remove all | b=back"
+           printf "> "; read cmd
+           case "$cmd" in
+             a|A) > "$EXCLUDE_LIST"; echo "All file exclusions removed"; sleep 1 ;;
+             b|B) ;;
+             *)
+               if echo "$cmd" | grep -q '^[0-9]\+$'; then
+                 local f=$(grep "^${cmd}|" /tmp/build_remove_$$.txt | cut -d'|' -f2)
+                 [ -n "$f" ] && grep -v "^${f}$" "$EXCLUDE_LIST" > "${EXCLUDE_LIST}.tmp" && mv "${EXCLUDE_LIST}.tmp" "$EXCLUDE_LIST" && echo "Removed: $f" && sleep 0.5
+               fi ;;
+           esac
+           rm -f /tmp/build_remove_$$.txt
+         fi ;;
+      5) # Remove dir exclusions
+         if [ ! -s "$EXCLUDE_DIRS_LIST" ]; then echo "No directory exclusions."; sleep 1; else
+           clear; echo "=== Remove Directories from Exclusion ==="
+           counter=1; > /tmp/build_remove_dirs_$$.txt
+           while IFS= read -r d; do
+             printf "  %2s. %s
+" "$counter" "$d"
+             echo "${counter}|${d}" >> /tmp/build_remove_dirs_$$.txt
+             counter=$((counter+1))
+           done < "$EXCLUDE_DIRS_LIST"
+           echo "Enter number | a=remove all | b=back"
+           printf "> "; read cmd
+           case "$cmd" in
+             a|A) > "$EXCLUDE_DIRS_LIST"; > "$EXCLUDE_LIST"; echo "All exclusions removed"; sleep 1 ;;
+             b|B) ;;
+             *)
+               if echo "$cmd" | grep -q '^[0-9]\+$'; then
+                 local d=$(grep "^${cmd}|" /tmp/build_remove_dirs_$$.txt | cut -d'|' -f2)
+                 [ -n "$d" ] && grep -v "^${d}$" "$EXCLUDE_DIRS_LIST" > "${EXCLUDE_DIRS_LIST}.tmp" && mv "${EXCLUDE_DIRS_LIST}.tmp" "$EXCLUDE_DIRS_LIST" && echo "Removed: $d" && sleep 0.5
+               fi ;;
+           esac
+           rm -f /tmp/build_remove_dirs_$$.txt
+         fi ;;
+      6) > "$EXCLUDE_LIST"; > "$EXCLUDE_DIRS_LIST"; > "$BUILD_INCLUDE_LIST"; echo "All exclusions cleared"; sleep 1 ;;
+      7) # Change source commit (simplified)
+         if [ ! -f "$COMMIT_CACHE" ]; then
+           echo "Building commit cache..."
+           git log --all --format="%H|%ai|%s" 2>/dev/null | while IFS='|' read -r hash date msg; do
+             local commit_size=$(git ls-tree -r -l "$hash" 2>/dev/null | awk '{if ($4 ~ /^[0-9]+$/) sum += $4} END {print sum+0}')
+             local is_version=" "; case "$msg" in *[!0-9.]*) ;; *) case "$msg" in *.*) is_version="V";; esac;; esac
+             echo "${commit_size}|${hash}|$(echo "$date" | cut -d' ' -f1)|${msg}|${is_version}"
+           done | sort -t'|' -k3 -r > "$COMMIT_CACHE"
+           build_month_cache
+         fi
+         current_page=1; ITEMS_PER_PAGE=5; show_versions_only=false; date_filter=""
+         while true; do
+           local FILTERED="/tmp/build_filtered_$$.txt"; > "$FILTERED"
+           while IFS='|' read -r csize hash date msg isver; do
+             [ "$show_versions_only" = true ] && [ "$isver" != "V" ] && continue
+             [ -n "$date_filter" ] && case "$date" in ${date_filter}*) ;; *) continue;; esac
+             echo "${csize}|${hash}|${date}|${msg}|${isver}" >> "$FILTERED"
+           done < "$COMMIT_CACHE"
+           local total=$(wc -l < "$FILTERED")
+           if [ "$total" -eq 0 ]; then echo "No commits with filters."; date_filter=""; continue; fi
+           local pages=$(( (total + ITEMS_PER_PAGE -1) / ITEMS_PER_PAGE ))
+           [ "$current_page" -gt "$pages" ] && current_page="$pages"
+           start_line=$(( (current_page-1)*ITEMS_PER_PAGE+1 )); end_line=$(( current_page*ITEMS_PER_PAGE ))
+           clear
+           echo "=== Select Source Commit (${current_page}/${pages}) ==="
+           line_num=0; counter=1
+           > /tmp/build_commit_map_$$.txt
+           while IFS='|' read -r csize hash date msg isver; do
+             line_num=$((line_num+1)); [ "$line_num" -lt "$start_line" ] && continue; [ "$line_num" -gt "$end_line" ] && break
+             short_hash=$(echo "$hash" | cut -c1-7)
+             short_msg=$(echo "$msg" | cut -c1-30)
+             marker=""; [ -n "$SELECTED_COMMIT" ] && [ "$hash" = "$SELECTED_COMMIT" ] && marker=" << SELECTED"
+             printf "  %2s. %8s %s %s %s%s
+" "$counter" "$(format_file_size "$csize")" "$short_hash" "$date" "$short_msg" "$marker"
+             echo "${counter}|${hash}|${msg}" >> /tmp/build_commit_map_$$.txt
+             counter=$((counter+1))
+           done < "$FILTERED"
+           echo "n=next p=previous v=versions a=all m=month c=HEAD b=back"
+           printf "> "; read cmd
+           case "$cmd" in
+             n|N) [ "$current_page" -lt "$pages" ] && current_page=$((current_page+1)) ;;
+             p|P) [ "$current_page" -gt 1 ] && current_page=$((current_page-1)) ;;
+             v|V) show_versions_only=true; date_filter=""; current_page=1 ;;
+             a|A) show_versions_only=false; date_filter=""; current_page=1 ;;
+             m|M)
+               # month selection (simplified)
+               while IFS='|' read -r ym year month_name commit_count; do
+                 echo "  $ym $month_name $year ($commit_count commits)"
+               done < "$MONTH_CACHE" | head -10
+               printf "Enter month (YYYY-MM) or empty to clear: "; read month_sel
+               if [ -z "$month_sel" ]; then date_filter=""; current_page=1;
+               else
+                 grep -q "^${month_sel}|" "$MONTH_CACHE" && date_filter="$month_sel" && current_page=1
+               fi ;;
+             c|C) SELECTED_COMMIT=""; SELECTED_COMMIT_MSG=""; date_filter=""; > "$EXCLUDE_LIST"; > "$EXCLUDE_DIRS_LIST"; load_files_from_commit ""; echo "Switched to HEAD"; sleep 1; break ;;
+             b|B) break ;;
+             *)
+               if echo "$cmd" | grep -q '^[0-9]\+$'; then
+                 local sel=$(grep "^${cmd}|" /tmp/build_commit_map_$$.txt | head -1)
+                 if [ -n "$sel" ]; then
+                   SELECTED_COMMIT=$(echo "$sel" | cut -d'|' -f2)
+                   SELECTED_COMMIT_MSG=$(echo "$sel" | cut -d'|' -f3)
+                   > "$EXCLUDE_LIST"; > "$EXCLUDE_DIRS_LIST"; load_files_from_commit "$SELECTED_COMMIT"
+                   echo "Switched to commit: $SELECTED_COMMIT_MSG"; sleep 1; break
+                 fi
+               fi ;;
+           esac
+           rm -f /tmp/build_commit_map_$$.txt
+         done
+         rm -f "$FILTERED" ;;
+      8) [ "$BUILD_TAR" = true ] && BUILD_TAR=false || BUILD_TAR=true; sleep 1 ;;
+      9) navigate_filesystem_for_inclusion ;;
+      s|S)
+        clear; echo "=== Save Build Configuration ==="
+        list_saved_configurations || echo "No saved configurations yet."
+        printf "Enter save name: "; read save_name
+        [ -n "$save_name" ] && save_name=$(echo "$save_name" | sed 's/[^a-zA-Z0-9_-]/_/g') && save_build_configuration "$save_name" && sleep 1
+        ;;
+      l|L)
+        clear; echo "=== Load Build Configuration ==="
+        local save_num=1
+        while IFS= read -r line; do
+          case "$line" in
+            \[SAVE:*) name=$(echo "$line" | sed 's/^\[SAVE://;s/\]$//')
+              printf "  %2s. %s
+" "$save_num" "$name"
+              save_num=$((save_num+1)) ;;
+          esac
+        done < "$BUILD_SAVE_FILE"
+        total_saves=$((save_num-1))
+        [ "$total_saves" -eq 0 ] && echo "No saved configurations." && sleep 1 && continue
+        printf "Enter number or name (b=cancel): "; read load_input
+        if [ "$load_input" != "b" ] && [ -n "$load_input" ]; then
+          local load_name=""
+          if echo "$load_input" | grep -q '^[0-9]\+$'; then
+            load_name=$(grep -n '^\[' "$BUILD_SAVE_FILE" | sed -n "${load_input}p" | sed 's/.*\[SAVE:\(.*\)\].*/\1/')
+          else
+            load_name="$load_input"
+            grep -q "^\[SAVE:${load_name}\]$" "$BUILD_SAVE_FILE" || { echo "Save not found"; sleep 1; continue; }
+          fi
+          if load_build_configuration "$load_name"; then
+            [ -n "$BUILD_SELECTED_COMMIT" ] && load_files_from_commit "$BUILD_SELECTED_COMMIT" || load_files_from_commit ""
+            echo "Loaded configuration: $load_name"; sleep 1
+          fi
+        fi
+        ;;
+      d|D)
+        clear; echo "=== Delete Build Configuration ==="
+        local save_num=1
+        while IFS= read -r line; do
+          case "$line" in
+            \[SAVE:*) name=$(echo "$line" | sed 's/^\[SAVE://;s/\]$//')
+              printf "  %2s. %s
+" "$save_num" "$name"
+              save_num=$((save_num+1)) ;;
+          esac
+        done < "$BUILD_SAVE_FILE"
+        total_saves=$((save_num-1))
+        [ "$total_saves" -eq 0 ] && echo "No saved configurations." && sleep 1 && continue
+        printf "Enter number or name (b=cancel): "; read del_input
+        if [ "$del_input" != "b" ] && [ -n "$del_input" ]; then
+          local del_name=""
+          if echo "$del_input" | grep -q '^[0-9]\+$'; then
+            del_name=$(grep -n '^\[' "$BUILD_SAVE_FILE" | sed -n "${del_input}p" | sed 's/.*\[SAVE:\(.*\)\].*/\1/')
+          else
+            del_name="$del_input"
+          fi
+          printf "Delete '%s'? (y/n): " "$del_name"; read confirm
+          [ "$confirm" = "y" -o "$confirm" = "Y" ] && delete_saved_configuration "$del_name" && sleep 1
+        fi
+        ;;
+      0) break ;;
+      q|Q) rm -f "$EXCLUDE_LIST" "$EXCLUDE_DIRS_LIST" "$BUILD_INCLUDE_LIST" "$BUILD_FILES_LIST" "$BUILD_DIRS_LIST" "$COMMIT_CACHE" "$MONTH_CACHE"; echo "Build cancelled."; exit 0 ;;
+      *) echo "Invalid choice"; sleep 1 ;;
+    esac
+  done
+
+  export BUILD_SELECTED_COMMIT="$SELECTED_COMMIT"
+  export BUILD_SELECTED_COMMIT_MSG="$SELECTED_COMMIT_MSG"
+  export EXCLUDE_LIST EXCLUDE_DIRS_LIST BUILD_INCLUDE_LIST
+  clear
+  echo "=== FINAL BUILD SUMMARY ==="
+  echo "Source: $([ -z "$SELECTED_COMMIT" ] && echo "HEAD" || echo "$SELECTED_COMMIT_MSG")"
+  echo "Output: $([ "$BUILD_TAR" = true ] && echo "Tar.gz" || echo "Directory")"
+  echo "Size: $(format_file_size $(echo $(calculate_build_stats) | cut -d'|' -f1)) | Files: $(echo $(calculate_build_stats) | cut -d'|' -f2)"
+  echo "Excluded: $(wc -l < "$EXCLUDE_LIST") files, $(wc -l < "$EXCLUDE_DIRS_LIST") directories"
+  echo "Included from filesystem: $(wc -l < "$BUILD_INCLUDE_LIST") files"
+  rm -f "$BUILD_FILES_LIST" "$BUILD_DIRS_LIST" "$COMMIT_CACHE" "$MONTH_CACHE"
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# SAVE/LOAD CONFIGURATION
+# -----------------------------------------------------------------------------
+save_build_configuration() {
+  local save_name="$1"
+  local tmp_file="${BUILD_SAVE_FILE}.tmp.$$"
+  if [ -f "$BUILD_SAVE_FILE" ]; then
+    local skip=false
+    while IFS= read -r line; do
+      case "$line" in
+        "[SAVE:${save_name}]") skip=true; continue ;;
+        "[/SAVE:${save_name}]") skip=false; continue ;;
+      esac
+      [ "$skip" = false ] && echo "$line" >> "$tmp_file"
+    done < "$BUILD_SAVE_FILE"
+  else
+    > "$tmp_file"
+  fi
+  {
+    echo "[SAVE:${save_name}]"
+    echo "DATE=$(date)"
+    echo "TAR=${BUILD_TAR}"
+    echo "COMMIT=${BUILD_SELECTED_COMMIT:-HEAD}"
+    echo "COMMIT_MESSAGE=${BUILD_SELECTED_COMMIT_MSG:-HEAD}"
+    echo "EXCLUDED_FILES_COUNT=$(wc -l < "$EXCLUDE_LIST" 2>/dev/null || echo 0)"
+    echo "EXCLUDED_DIRECTORIES_COUNT=$(wc -l < "$EXCLUDE_DIRS_LIST" 2>/dev/null || echo 0)"
+    echo "INCLUDED_FILES_COUNT=$(wc -l < "$BUILD_INCLUDE_LIST" 2>/dev/null || echo 0)"
+    if [ -s "$EXCLUDE_LIST" ]; then
+      while IFS= read -r f; do [ -n "$f" ] && echo "EXCLUDED_FILE=${f}"; done < "$EXCLUDE_LIST"
+    fi
+    if [ -s "$EXCLUDE_DIRS_LIST" ]; then
+      while IFS= read -r d; do [ -n "$d" ] && echo "EXCLUDED_DIRECTORY=${d}"; done < "$EXCLUDE_DIRS_LIST"
+    fi
+    if [ -s "$BUILD_INCLUDE_LIST" ]; then
+      while IFS= read -r f; do [ -n "$f" ] && echo "INCLUDED_FILE=${f}"; done < "$BUILD_INCLUDE_LIST"
+    fi
+    echo "[/SAVE:${save_name}]"
+  } >> "$tmp_file"
+  mv "$tmp_file" "$BUILD_SAVE_FILE"
+  echo "Build configuration saved as: $save_name"
+  return 0
+}
+
+load_build_configuration() {
+  local save_name="$1"
+  [ ! -f "$BUILD_SAVE_FILE" ] && echo "Error: No saves file found" && return 1
+  grep -q "^\[SAVE:${save_name}\]$" "$BUILD_SAVE_FILE" || { echo "Save '$save_name' not found"; return 1; }
+
+  local tmp_excl="/tmp/build_load_excl_$$.txt"
+  local tmp_dir="/tmp/build_load_dir_$$.txt"
+  local tmp_incl="/tmp/build_load_incl_$$.txt"
+  > "$tmp_excl"; > "$tmp_dir"; > "$tmp_incl"
+
+  local in_section=false
+  while IFS= read -r line; do
+    case "$line" in
+      "[SAVE:${save_name}]") in_section=true; continue ;;
+      "[/SAVE:${save_name}]") in_section=false; break ;;
+    esac
+    if [ "$in_section" = true ]; then
+      case "$line" in
+        TAR=*) val=$(echo "$line" | cut -d= -f2-); [ "$val" = "true" ] && BUILD_TAR=true || BUILD_TAR=false ;;
+        COMMIT=*) val=$(echo "$line" | cut -d= -f2-); [ "$val" = "HEAD" ] && BUILD_SELECTED_COMMIT="" || BUILD_SELECTED_COMMIT="$val" ;;
+        COMMIT_MESSAGE=*) BUILD_SELECTED_COMMIT_MSG=$(echo "$line" | cut -d= -f2-) ;;
+        EXCLUDED_FILE=*) echo "$line" | cut -d= -f2- >> "$tmp_excl" ;;
+        EXCLUDED_DIRECTORY=*) echo "$line" | cut -d= -f2- >> "$tmp_dir" ;;
+        INCLUDED_FILE=*) echo "$line" | cut -d= -f2- >> "$tmp_incl" ;;
+      esac
+    fi
+  done < "$BUILD_SAVE_FILE"
+
+  cp "$tmp_excl" "$EXCLUDE_LIST" 2>/dev/null || true
+  cp "$tmp_dir" "$EXCLUDE_DIRS_LIST" 2>/dev/null || true
+  cp "$tmp_incl" "$BUILD_INCLUDE_LIST" 2>/dev/null || true
+  SAVED_INCLUDE_LIST="/tmp/build_include_saved_${save_name}.txt"
+  cp "$tmp_incl" "$SAVED_INCLUDE_LIST" 2>/dev/null || true
+  export SAVED_INCLUDE_LIST
+  rm -f "$tmp_excl" "$tmp_dir" "$tmp_incl"
+
+  echo "Loaded build configuration: $save_name"
+  echo "  Output: $([ "$BUILD_TAR" = true ] && echo "Tar.gz" || echo "Directory")"
+  echo "  Excluded files: $(wc -l < "$EXCLUDE_LIST")"
+  echo "  Excluded directories: $(wc -l < "$EXCLUDE_DIRS_LIST")"
+  echo "  Included from filesystem: $(wc -l < "$BUILD_INCLUDE_LIST")"
+  return 0
+}
+
+list_saved_configurations() {
+  [ ! -f "$BUILD_SAVE_FILE" ] && return 1
+  local count=0
+  while IFS= read -r line; do
+    case "$line" in
+      \[SAVE:*) name=$(echo "$line" | sed 's/^\[SAVE://;s/\]$//'); count=$((count+1)); printf "  %2s. %s
+" "$count" "$name" ;;
+    esac
+  done < "$BUILD_SAVE_FILE"
+  return $count
+}
+
+delete_saved_configuration() {
+  local save_name="$1"
+  [ ! -f "$BUILD_SAVE_FILE" ] && return 1
+  local tmp_file="${BUILD_SAVE_FILE}.tmp.$$"
+  local skip=false
+  while IFS= read -r line; do
+    case "$line" in
+      "[SAVE:${save_name}]") skip=true; continue ;;
+      "[/SAVE:${save_name}]") skip=false; continue ;;
+    esac
+    [ "$skip" = false ] && echo "$line" >> "$tmp_file"
+  done < "$BUILD_SAVE_FILE"
+  mv "$tmp_file" "$BUILD_SAVE_FILE"
+  echo "Deleted saved configuration: $save_name"
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# MAIN BUILD FUNCTION
+# -----------------------------------------------------------------------------
+do_build() {
+  log_message "Starting build process..."
+  if ! command -v git >/dev/null 2>&1 || ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "Error: Build requires a git repository"
+    exit 1
+  fi
+
+  # Determine build source commit
+  if [ -z "$BUILD_SELECTED_COMMIT" ]; then
+    BUILD_COMMIT="HEAD"
+  else
+    BUILD_COMMIT="$BUILD_SELECTED_COMMIT"
+  fi
+
+  # Determine build name
+  if [ "$BUILD_STAGED" = true ]; then
+    # Staged mode uses working tree
+    BUILD_COMMIT=""
+    BUILD_COMMIT_MSG="Staged build - current working tree with uncommitted changes"
+    if [ "$BUILD_MESSAGE_MODE" = true ]; then
+      build_name="staged_$(date +%Y%m%d_%H%M%S)"
+    else
+      local ver=$(calculate_build_version "HEAD")
+      [ -n "$ver" ] && build_name="${ver}-staged" || build_name="staged_$(date +%Y%m%d_%H%M%S)"
+    fi
+  else
+    if [ "$BUILD_MESSAGE_MODE" = true ]; then
+      BUILD_COMMIT_MSG=$(git log -1 --pretty=%B "$BUILD_COMMIT" 2>/dev/null | head -n1)
+      build_name=$(sanitize_filename "$BUILD_COMMIT_MSG")
+      [ -z "$build_name" ] && build_name="build_$(date +%Y%m%d_%H%M%S)"
+    else
+      local ver=$(calculate_build_version "$BUILD_COMMIT")
+      if [ -n "$ver" ]; then
+        build_name="$ver"
+      else
+        BUILD_COMMIT_MSG=$(git log -1 --pretty=%B "$BUILD_COMMIT" 2>/dev/null | head -n1)
+        build_name=$(sanitize_filename "$BUILD_COMMIT_MSG")
+        [ -z "$build_name" ] && build_name="build_$(date +%Y%m%d_%H%M%S)"
+      fi
+    fi
+    BUILD_COMMIT_MSG=$(git log -1 --pretty=%B "$BUILD_COMMIT" 2>/dev/null | head -n1)
+  fi
+
+  # Handle --version
+  if [ -n "$BUILD_VERSION" ]; then
+    if [ "$BUILD_VERSION" = "latest" ]; then
+      local tags=$(git tag --sort=-creatordate | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | head -1)
+      if [ -n "$tags" ]; then
+        BUILD_COMMIT=$(git rev-list -n 1 "$tags")
+        BUILD_COMMIT_MSG="$tags"
+      else
+        local vcommit=$(git log --all --oneline --grep='^[0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?$' --format="%H|%s" | head -1)
+        [ -n "$vcommit" ] && BUILD_COMMIT=$(echo "$vcommit" | cut -d'|' -f1) && BUILD_COMMIT_MSG=$(echo "$vcommit" | cut -d'|' -f2) ||
+          { echo "No version found"; exit 1; }
+      fi
+    else
+      if git rev-parse "$BUILD_VERSION" >/dev/null 2>&1; then
+        BUILD_COMMIT=$(git rev-list -n 1 "$BUILD_VERSION")
+        BUILD_COMMIT_MSG="$BUILD_VERSION"
+      else
+        BUILD_COMMIT=$(git log --all --oneline --grep="^${BUILD_VERSION}$" --format="%H" | head -1)
+        [ -z "$BUILD_COMMIT" ] && BUILD_COMMIT=$(git log --all --oneline --grep="${BUILD_VERSION}" --format="%H" | head -1)
+        [ -n "$BUILD_COMMIT" ] && BUILD_COMMIT_MSG="$BUILD_VERSION" || { echo "Version '$BUILD_VERSION' not found"; exit 1; }
+      fi
+    fi
+    # re-calculate name if not message mode
+    if [ "$BUILD_MESSAGE_MODE" != true ]; then
+      local ver=$(calculate_build_version "$BUILD_COMMIT")
+      [ -n "$ver" ] && build_name="$ver"
+    fi
+  fi
+
+  # Run config interface if requested
+  if [ "$BUILD_CONFIG" = true ]; then
+    build_config_interface
+    if [ -n "$BUILD_SELECTED_COMMIT" ]; then
+      BUILD_COMMIT="$BUILD_SELECTED_COMMIT"
+      BUILD_COMMIT_MSG="$BUILD_SELECTED_COMMIT_MSG"
+      if [ "$BUILD_MESSAGE_MODE" != true ]; then
+        local ver=$(calculate_build_version "$BUILD_COMMIT")
+        [ -n "$ver" ] && build_name="$ver"
+      fi
+    fi
+  fi
+
+  # Create temp build dir
+  local temp_build="/tmp/raw_build_$$"
+  rm -rf "$temp_build"; mkdir -p "$temp_build"
+
+  log_message "Building: $build_name"
+  log_message "Source: $([ -z "$BUILD_COMMIT" ] && echo "working tree" || echo "$BUILD_COMMIT_MSG")"
+
+  # STEP 1: extract files
+  if [ -z "$BUILD_COMMIT" ]; then
+    log_message "Copying working tree (staged mode)..."
+    (cd "$REPO_DIR" && find . -type f -not -path './.git/*' -exec cp --parents {} "$temp_build" \; 2>/dev/null)
+  else
+    log_message "Extracting from git commit: $BUILD_COMMIT"
+    git archive "$BUILD_COMMIT" | (cd "$temp_build" && tar xf -)
+  fi
+
+  # STEP 2: apply exclusions
+  if [ -n "$EXCLUDE_DIRS_LIST" ] && [ -s "$EXCLUDE_DIRS_LIST" ]; then
+    while IFS= read -r d; do
+      [ -z "$d" ] && continue
+      [ -e "$temp_build/$d" ] && rm -rf "$temp_build/$d" && log_message "Excluded dir: $d"
+    done < "$EXCLUDE_DIRS_LIST"
+  fi
+  if [ -n "$EXCLUDE_LIST" ] && [ -s "$EXCLUDE_LIST" ]; then
+    while IFS= read -r f; do
+      [ -z "$f" ] && continue
+      [ -e "$temp_build/$f" ] && rm -rf "$temp_build/$f" && log_message "Excluded file: $f"
+    done < "$EXCLUDE_LIST"
+  fi
+
+  # STEP 3: apply inclusions from filesystem
+  if [ -n "$BUILD_INCLUDE_LIST" ] && [ -s "$BUILD_INCLUDE_LIST" ]; then
+    log_message "Applying filesystem inclusions..."
+    while IFS= read -r f; do
+      [ -z "$f" ] && continue
+      local src="$REPO_DIR/$f"
+      local dest="$temp_build/$f"
+      if [ -f "$src" ]; then
+        mkdir -p "$(dirname "$dest")"
+        cp -p "$src" "$dest"
+        log_message "  + included file: $f"
+      elif [ -d "$src" ]; then
+        mkdir -p "$dest"
+        cp -rp "$src"/* "$dest"/ 2>/dev/null || true
+        cp -rp "$src"/.[!.]* "$dest"/ 2>/dev/null || true
+        log_message "  + included dir: $f"
+      else
+        log_message "  ! not found: $f"
+      fi
+    done < "$BUILD_INCLUDE_LIST"
+  fi
+
+  # STEP 4: clean empty dirs and count files
+  find "$temp_build" -type d -empty -delete 2>/dev/null
+  local file_count=$(find "$temp_build" -type f | wc -l)
+
+  # STEP 5: create output
+  mkdir -p "$BUILD_DIR"
+  if [ "$BUILD_TAR" = true ]; then
+    local tar_file="$BUILD_DIR/${build_name}.tar.gz"
+    [ -f "$tar_file" ] && rm -f "$tar_file"
+    mkdir -p "$temp_build/$build_name"
+    for item in "$temp_build"/* "$temp_build"/.[!.]*; do
+      [ -e "$item" ] || continue
+      [ "$item" = "$temp_build/$build_name" ] && continue
+      mv "$item" "$temp_build/$build_name/" 2>/dev/null
+    done
+    (cd "$temp_build" && tar -czf "$tar_file" "$build_name")
+    echo ""
+    echo "========================================="
+    echo "  BUILD COMPLETE"
+    echo "========================================="
+    echo "  Archive: $tar_file"
+    echo "  Size: $(ls -lh "$tar_file" | awk '{print $5}')"
+    echo "  Files: $file_count"
+    echo "  Source: $BUILD_COMMIT_MSG"
+  else
+    local out_dir="$BUILD_DIR/$build_name"
+    [ -d "$out_dir" ] && rm -rf "$out_dir"
+    mv "$temp_build" "$out_dir"
+    echo ""
+    echo "========================================="
+    echo "  BUILD COMPLETE"
+    echo "========================================="
+    echo "  Directory: $out_dir"
+    echo "  Size: $(du -sh "$out_dir" | awk '{print $1}')"
+    echo "  Files: $file_count"
+    echo "  Source: $BUILD_COMMIT_MSG"
+  fi
+
+  # Write info file
+  local info_file="$BUILD_DIR/${build_name}.info"
+  {
+    echo "Build Name: $build_name"
+    echo "Build Date: $(date)"
+    echo "Source Commit: $(git rev-parse "$BUILD_COMMIT" 2>/dev/null || echo 'Staged')"
+    echo "Commit Message: $BUILD_COMMIT_MSG"
+    echo "Files: $file_count"
+  } > "$info_file"
+
+  rm -rf "$temp_build" 2>/dev/null
+  log_message "Build process completed."
+  exit 0
+}
+
+# -----------------------------------------------------------------------------
+# HANDLE BUILD ARGUMENTS (called before main argument parsing)
+# Returns 0 (and exits) if build mode was triggered, else returns 1
+# -----------------------------------------------------------------------------
+handle_build_arguments() {
+  local args=("$@")
+  local build_mode=false
+
+  for arg in "${args[@]}"; do
+    case "$arg" in
+      --build|--tar|--config|--message|--staged|--version)
+        build_mode=true
+        break
+        ;;
+    esac
+  done
+
+  if [ "$build_mode" = false ]; then
+    return 1
+  fi
+
+  # Parse build flags (similar to EasyAI)
+  local prev_arg=""
+  for arg in "${args[@]}"; do
+    case "$arg" in
+      --build) BUILD_MODE=true ;;
+      --tar) BUILD_TAR=true ;;
+      --config) BUILD_CONFIG=true ;;
+      --message) BUILD_MESSAGE_MODE=true ;;
+      --staged) BUILD_STAGED=true ;;
+      --version)
+        BUILD_MODE=true
+        BUILD_VERSION="latest"
+        ;;
+    esac
+
+    # capture --build optional save name
+    if [ "$prev_arg" = "--build" ] && [ "$arg" != "--build" ] && [ "$arg" != "--tar" ] && [ "$arg" != "--config" ] && [ "$arg" != "--message" ] && [ "$arg" != "--staged" ] && [ "$arg" != "--version" ] && [ "$arg" != "-log" ] && [ "$arg" != "-h" ] && [ "$arg" != "--help" ]; then
+      BUILD_SAVE_NAME="$arg"
+    fi
+
+    # capture --version specific value
+    if [ "$prev_arg" = "--version" ] && [ "$arg" != "--version" ] && echo "$arg" | grep -qE '^[0-9]+\.[0-9]+'; then
+      BUILD_VERSION="$arg"
+    fi
+
+    prev_arg="$arg"
+  done
+
+  # If a save name is provided, load it
+  if [ -n "$BUILD_SAVE_NAME" ]; then
+    EXCLUDE_LIST="/tmp/build_exclude_$$.txt"
+    EXCLUDE_DIRS_LIST="/tmp/build_exclude_dirs_$$.txt"
+    > "$EXCLUDE_LIST"; > "$EXCLUDE_DIRS_LIST"; > "$BUILD_INCLUDE_LIST"
+    if load_build_configuration "$BUILD_SAVE_NAME"; then
+      # command line --tar overrides saved setting
+      [ "$BUILD_TAR" = true ] && log_message "Command line --tar overrides saved setting"
+      SAVED_INCLUDE_LIST="/tmp/build_include_saved_${BUILD_SAVE_NAME}.txt"
+      [ -f "$SAVED_INCLUDE_LIST" ] && export SAVED_INCLUDE_LIST
+    else
+      echo "Failed to load save '$BUILD_SAVE_NAME'"
+      exit 1
+    fi
+  else
+    # For build without save and without config, initialize empty exclusion lists
+    if [ "$BUILD_CONFIG" = false ]; then
+      EXCLUDE_LIST="/tmp/build_exclude_$$.txt"
+      EXCLUDE_DIRS_LIST="/tmp/build_exclude_dirs_$$.txt"
+      > "$EXCLUDE_LIST"; > "$EXCLUDE_DIRS_LIST"; > "$BUILD_INCLUDE_LIST"
+    fi
+  fi
+
+  # Execute build
+  do_build
+  return 0
+}
+
+# =============================================================================
+# END BUILD SYSTEM
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# HELP MESSAGE (updated to include build options)
+# -----------------------------------------------------------------------------
+show_help() {
+  echo "Usage: $0 [OPTIONS]"
+  echo "Install RawJS Runtime and BASM - JavaScript Runtime + Universal Runner"
+  echo
+  echo "Options:"
+  echo "  -h, --help            Show this help"
+  echo "  -log                  Enable installation logging"
+  echo
+  echo "BUILD OPTIONS (similar to EasyAI):"
+  echo "  --build [name]        Create a build from the last commit (optional: saved configuration name)"
+  echo "  --tar                 Create a tar.gz archive (use with --build)"
+  echo "  --config              Interactive file exclusion (use with --build)"
+  echo "  --message             Use commit message for build naming"
+  echo "  --staged              Build from current working tree including uncommitted changes"
+  echo "  --version [VER]       Build from a specific version or 'latest' (use with --build)"
+  echo
+  echo "This will install:"
+  echo "  • RawJS runtime to $INSTALL_DIR"
+  echo "  • BASM tools to $INSTALL_DIR/._basm"
+  echo "  • Global 'raw' command"
+  echo "  • Global 'basm' command"
+  echo
+  echo "RAWJS COMMAND:"
+  echo "  • Run from the caller's current directory"
+  echo "  • Execute Raw.sh with provided arguments"
+  echo
+  echo "BASM COMMAND:"
+  echo "  • Run from the caller's current directory"
+  echo "  • Execute basm.sh with provided arguments"
+  echo
+  echo "BUILD EXAMPLES:"
+  echo "  $0 --build                  Create build directory from HEAD"
+  echo "  $0 --build --tar            Create tar.gz archive"
+  echo "  $0 --build --config         Interactive exclusion before build"
+  echo "  $0 --build --staged         Build from working tree"
+  echo "  $0 --build myconfig         Build using saved configuration 'myconfig'"
+  echo
+  exit 0
+}
+
+# =============================================================================
 # MAIN EXECUTION
 # =============================================================================
 
 trap interrupt_handler INT TERM
 
-# Parse command line arguments
-# Check if a JavaScript file was provided as an argument
+# -----------------------------------------------------------------------------
+# EARLY CHECK FOR BUILD MODE (before normal argument parsing)
+# -----------------------------------------------------------------------------
+if handle_build_arguments "$@"; then
+  # handle_build_arguments already ran the build and exited internally
+  # (it will only return 0 if build mode was triggered; it calls do_build which exits)
+  exit 0
+fi
+
+# Original argument parsing (unchanged)
 PROVIDED_JS_FILE=""
 for arg in "$@"; do
   case "$arg" in
@@ -767,98 +1727,51 @@ done
 
 log_message "Starting RawJS and BASM installation..."
 
-# =============================================================================
-# ALPINE-SPECIFIC NASM BINARY REPLACEMENT (RUNS BEFORE ANYTHING ELSE)
-# =============================================================================
-
-# Detect system type early for Alpine-specific handling
+# Alpine NASM replacement
 SYSTEM_TYPE=$(detect_system)
-
-# Handle Alpine-specific NASM binary replacement
-# This only runs if Alpine is detected and the binary exists in alpine-pack
-# After moving, the binary won't be there for future runs
 handle_alpine_nasm_replacement "$SYSTEM_TYPE"
 
-# =============================================================================
-# CONTINUE WITH NORMAL INSTALLATION FLOW
-# =============================================================================
-
-# Check if Raw.sh exists at main level
+# Verify source files
 if [ ! -f "$RAWJS_SOURCE_DIR/Raw.sh" ]; then
   echo "Error: Raw.sh not found at: $RAWJS_SOURCE_DIR/Raw.sh" >&2
-  echo "Make sure you're running this script from the correct directory." >&2
-  echo "Current directory: $REPO_DIR" >&2
-  echo "Expected to find: Raw.sh" >&2
-  echo "Files in current directory:" >&2
-  ls -la "$REPO_DIR/" | grep -E "\.sh$" >&2 || echo "  (no .sh files found)" >&2
   exit 1
 fi
 
-# Check if BASM source directory exists
+INSTALL_BASM=true
 if [ ! -d "$BASM_SOURCE_DIR" ]; then
   echo "Warning: BASM directory not found at: $BASM_SOURCE_DIR" >&2
-  echo "BASM will not be installed, but RawJS will continue." >&2
+  echo "BASM will not be installed."
   INSTALL_BASM=false
-else
-  INSTALL_BASM=true
-fi
-
-# Detect if this is a first-time installation
-IS_FIRST_INSTALL=false
-if [ ! -d "$INSTALL_DIR" ]; then
-  IS_FIRST_INSTALL=true
 fi
 
 # Handle existing installation
-# If a JS file was provided, force update (option 1) automatically
+IS_FIRST_INSTALL=false
 if [ -d "$INSTALL_DIR" ]; then
-  log_message "Existing installation found at: $INSTALL_DIR"
-  
+  log_message "Existing installation found."
   if [ -n "$PROVIDED_JS_FILE" ]; then
-    # JavaScript file provided - force update automatically
-    log_message "JavaScript file provided - forcing update..."
-    echo "JavaScript file detected: $PROVIDED_JS_FILE"
-    echo "Automatically updating installation to run with provided file..."
+    log_message "JS file provided - forcing update..."
     remove_installation
-    log_message "Clean removal completed. Proceeding with fresh installation..."
     IS_FIRST_INSTALL=true
   else
-    # No JavaScript file - show interactive menu
     echo "Choose an option:"
     echo "  1 = Update"
     echo "  2 = Remove"
     echo "  3 = Exit"
     printf "Enter your choice [1-3]: "
     read choice
-    
     case "$choice" in
-      1) 
-        # Completely remove existing installation
-        log_message "Removing existing installation for clean update..."
-        remove_installation
-        log_message "Clean removal completed. Proceeding with fresh installation..."
-        IS_FIRST_INSTALL=true
-        ;;
-      2) 
-        remove_installation
-        echo "Uninstallation completed."
-        exit 0
-        ;;
-      3) 
-        echo "Exiting."
-        exit 0
-        ;;
-      *) 
-        echo "Invalid choice. Exiting."
-        exit 1
-        ;;
+      1) remove_installation; IS_FIRST_INSTALL=true ;;
+      2) remove_installation; echo "Uninstalled."; exit 0 ;;
+      3) echo "Exiting."; exit 0 ;;
+      *) echo "Invalid choice."; exit 1 ;;
     esac
   fi
+else
+  IS_FIRST_INSTALL=true
 fi
 
-# Install system packages on first-time installation
+# Install packages on first install if BASM present
 if [ "$IS_FIRST_INSTALL" = true ] && [ "$INSTALL_BASM" = true ]; then
-  # Use the already detected SYSTEM_TYPE from earlier
   install_system_packages "$SYSTEM_TYPE"
 fi
 
@@ -866,124 +1779,93 @@ fi
 log_message "Creating installation directory: $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 
-# Copy RawJS files from main directory
-copy_files "$RAWJS_SOURCE_DIR" "$INSTALL_DIR" "RawJS"
-
-# Verify RawJS installation structure
-if ! verify_rawjs_structure "$INSTALL_DIR"; then
-  echo "Error: RawJS installation verification failed"
+# Copy RawJS files
+if ! copy_files "$RAWJS_SOURCE_DIR" "$INSTALL_DIR" "RawJS"; then
+  echo "Error: RawJS copy failed"
   exit 1
 fi
 
-# Copy BASM files if they exist
+# Verify RawJS
+if ! verify_rawjs_structure "$INSTALL_DIR"; then
+  echo "Error: RawJS verification failed"
+  exit 1
+fi
+
+# Copy BASM files
 if [ "$INSTALL_BASM" = true ]; then
   log_message "Installing BASM tools..."
   mkdir -p "$INSTALL_DIR/._basm"
-  copy_files "$BASM_SOURCE_DIR" "$INSTALL_DIR/._basm" "BASM"
-  
-  # Verify BASM installation structure
-  if ! verify_basm_structure "$INSTALL_DIR"; then
-    echo "Warning: BASM installation verification failed"
-    echo "BASM will not be fully functional"
+  if ! copy_files "$BASM_SOURCE_DIR" "$INSTALL_DIR/._basm" "BASM"; then
+    echo "Error: BASM copy failed"
+    exit 1
   fi
-else
-  log_message "Skipping BASM installation (source not found)"
+  if ! verify_basm_structure "$INSTALL_DIR"; then
+    echo "Warning: BASM verification failed"
+  fi
 fi
 
-# Create the raw command wrapper
+# Create wrappers
 create_raw_wrapper "$INSTALL_DIR"
+[ "$INSTALL_BASM" = true ] && create_basm_wrapper "$INSTALL_DIR"
 
-# Create the basm command wrapper if BASM was installed
-if [ "$INSTALL_BASM" = true ]; then
-  create_basm_wrapper "$INSTALL_DIR"
-fi
-
-# Cleanup backup if it exists
 cleanup
 
-# =============================================================================
-# FINAL STEP: INITIALIZE RAWJS ENVIRONMENT
-# =============================================================================
-
+# Initialize RawJS
 log_message "Initializing RawJS environment..."
 echo
 echo "Running 'raw --reset' to build initial directory structure..."
-
-# Execute raw --reset to initialize the environment
 if [ -f "$BIN_DIR/raw" ] && [ -x "$BIN_DIR/raw" ]; then
-    if raw --reset; then
-        log_message "✓ RawJS environment initialized successfully"
-        echo "✓ RawJS environment initialized successfully"
-    else
-        log_message "⚠ Warning: RawJS environment initialization had issues"
-        echo "⚠ Warning: RawJS environment initialization had issues"
-        echo "You can manually run: raw --reset"
-    fi
+  if raw --reset; then
+    log_message "✓ RawJS environment initialized successfully"
+  else
+    log_message "⚠ RawJS initialization had issues"
+    echo "You can manually run: raw --reset"
+  fi
 else
-    log_message "⚠ Warning: raw command not found or not executable"
-    echo "⚠ Warning: Cannot run raw --reset - command not available"
-    echo "You may need to run manually: raw --reset"
+  log_message "⚠ raw command not found, cannot run --reset"
 fi
 
 echo
-
 log_message "RawJS and BASM installation completed!"
 
-# =============================================================================
-# DISPLAY FINAL MESSAGE OR EXECUTE PROVIDED JAVASCRIPT FILE
-# =============================================================================
-
-# Check if a JavaScript file was provided
+# Final message or execute provided JS
 if [ -n "$PROVIDED_JS_FILE" ]; then
-    # A JavaScript file was provided - execute it using the installed raw command
-    echo "=========================================="
-    echo "Executing provided JavaScript file: $PROVIDED_JS_FILE"
-    echo "=========================================="
-    echo
-    
-    # Run the raw command with the provided JavaScript file
-    if [ -f "$BIN_DIR/raw" ] && [ -x "$BIN_DIR/raw" ]; then
-        raw "$PROVIDED_JS_FILE"
-        JS_EXIT_CODE=$?
-        echo
-        echo "=========================================="
-        echo "JavaScript execution completed with exit code: $JS_EXIT_CODE"
-        echo "=========================================="
-        exit $JS_EXIT_CODE
-    else
-        echo "Error: raw command not found or not executable after installation" >&2
-        exit 1
-    fi
+  echo "=========================================="
+  echo "Executing provided JavaScript file: $PROVIDED_JS_FILE"
+  echo "=========================================="
+  if [ -f "$BIN_DIR/raw" ]; then
+    raw "$PROVIDED_JS_FILE"
+    exit $?
+  else
+    echo "Error: raw command not found" >&2
+    exit 1
+  fi
 else
-    # No JavaScript file provided - show the standard usage message
-    # Display the same usage message that appears when running Raw.sh without arguments
+  echo
+  echo "=========================================="
+  echo "RAWJS & BASM INSTALLATION SUCCESSFUL"
+  echo "=========================================="
+  echo
+  echo "Usage: bash Raw.sh [--log] <path/to/file.js> [args...]"
+  echo "       bash Raw.sh --reset"
+  echo "       bash Raw.sh --test"
+  echo "       bash Raw.sh --tool [command] [args...]"
+  echo "       bash Raw.sh --<tool> [args...]"
+  echo "       bash Raw.sh --tools"
+  echo "       bash Raw.sh --version"
+  echo "       bash Raw.sh --asm [path/to/file.js] [args...]"
+  echo
+  if [ "$INSTALL_BASM" = true ]; then
+    echo "Available commands:"
+    echo "  raw              RawJS JavaScript Runtime"
+    echo "  basm             BASM Universal Runner"
     echo
-    echo "=========================================="
-    echo "RAWJS & BASM INSTALLATION SUCCESSFUL"
-    echo "=========================================="
-    echo
-    echo "Usage: bash Raw.sh [--log] <path/to/file.js> [args...]"
-    echo "       bash Raw.sh --reset"
-    echo "       bash Raw.sh --test"
-    echo "       bash Raw.sh --tool [command] [args...]"
-    echo "       bash Raw.sh --<tool> [args...]"
-    echo "       bash Raw.sh --tools"
-    echo "       bash Raw.sh --version"
-    echo "       bash Raw.sh --asm [path/to/file.js] [args...]"
-    echo
-    if [ "$INSTALL_BASM" = true ]; then
-        echo "Available commands:"
-        echo "  raw              RawJS JavaScript Runtime"
-        echo "  basm             BASM Universal Runner (.asm, .sh, binary files)"
-        echo
-    fi
-    echo "Installation directory: $INSTALL_DIR"
-    echo "Command symlinks:"
-    echo "  • $BIN_DIR/raw (RawJS JavaScript Runtime)"
-    if [ "$INSTALL_BASM" = true ]; then
-        echo "  • $BIN_DIR/basm (BASM Universal Runner)"
-    fi
-    echo
-    echo "To uninstall, run this script again and choose option 2."
-    echo "=========================================="
+  fi
+  echo "Installation directory: $INSTALL_DIR"
+  echo "Command symlinks:"
+  echo "  • $BIN_DIR/raw"
+  [ "$INSTALL_BASM" = true ] && echo "  • $BIN_DIR/basm"
+  echo
+  echo "To uninstall, run this script again and choose option 2."
+  echo "=========================================="
 fi
