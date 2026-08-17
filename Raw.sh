@@ -1074,183 +1074,156 @@ handle_cli() {
     echo -e "${YELLOW}Each line will be executed immediately.${NC}"
     echo -e "${YELLOW}Type 'exit' or 'quit' to leave.${NC}"
     echo -e "${YELLOW}Type 'clear' to clear accumulated code.${NC}"
-    echo -e "${YELLOW}Type 'errorgen' to write all error lines to .rawjs_cli.js and exit.${NC}"
+    echo -e "${YELLOW}Type 'errorgen' to write all lines to .rawjs_cli.js, generate --log and --verbose logs, and exit.${NC}"
     echo -e "${BLUE}========================================${NC}"
     echo ""
-
+    
+    # Create temp JS file in caller directory
     local cli_js_file="$CALLER_DIR/.rawjs_cli.js"
+    
+    # Initialize empty JS file
     echo "" > "$cli_js_file"
-
+    
+    # Track the entire accumulated script (all lines typed, regardless of execution success)
+    local full_script=""
+    
+    # Track previous output to extract only new output
     local previous_output=""
     
-    # Track all lines (both successful and error) in order
-    local all_lines=()
-    # Track which lines had errors (by their content and position)
-    local error_line_indices=()
-
-    local error_pattern="(ReferenceError|SyntaxError|TypeError|RangeError|URIError|EvalError|InternalError|Error:|error:|is not defined|undefined is not|Cannot read|Cannot set|failed|FAILED)"
-    local cli_log=$(mktemp)
-
+    # Track lines that caused errors (kept for potential future use, not written to final file)
+    local error_lines=()
+    
+    # Start the interactive loop
     while true; do
+        # Display prompt
         echo -ne "${GREEN}rawjs> ${NC}"
+        
+        # Read user input
         if ! IFS= read -r user_input; then
+            # EOF (Ctrl+D)
             echo ""
             break
         fi
-
+        
+        # Check for exit commands
         if [ "$user_input" = "exit" ] || [ "$user_input" = "quit" ]; then
             echo -e "${YELLOW}Goodbye!${NC}"
             break
         fi
-
+        
+        # Check for clear command
         if [ "$user_input" = "clear" ]; then
             echo "" > "$cli_js_file"
+            full_script=""
             previous_output=""
-            all_lines=()
-            error_line_indices=()
+            error_lines=()
             echo -e "${BLUE}Cleared accumulated code and error history.${NC}"
             continue
         fi
-
+        
+        # Skip empty lines
         if [ -z "$user_input" ]; then
             continue
         fi
-
+        
+        # NEW: Detect errorgen command
         if [[ "$user_input" == *"errorgen"* ]]; then
-            echo -e "${YELLOW}errorgen detected. Writing full script with error lines to .rawjs_cli.js...${NC}"
+            echo -e "${YELLOW}errorgen detected. Writing all lines to .rawjs_cli.js and generating logs...${NC}"
             
-            # Reconstruct the full script with all lines (including errors)
-            if [ ${#all_lines[@]} -gt 0 ]; then
-                printf "%s\n" "${all_lines[@]}" > "$cli_js_file"
-                echo -e "${GREEN}✓ Wrote full script (${#all_lines[@]} lines total) to $cli_js_file${NC}"
-                if [ ${#error_line_indices[@]} -gt 0 ]; then
-                    echo -e "${YELLOW}  ${#error_line_indices[@]} error line(s) included for debugging${NC}"
-                fi
-            else
-                echo "" > "$cli_js_file"
-                echo -e "${YELLOW}No lines recorded. Wrote empty file.${NC}"
-            fi
-            rm -f "$cli_log"
+            # Write the FULL script (all lines typed) to .rawjs_cli.js
+            printf "%s\n" "$full_script" > "$cli_js_file"
+            
+            # Define log file paths (in caller directory)
+            local log_file="$CALLER_DIR/.rawjs_cli.log.txt"
+            local verbose_file="$CALLER_DIR/.rawjs_cli.verbose.txt"
+            
+            # Run Raw.sh with --log and capture all terminal output
+            echo -e "${BLUE}Running with --log...${NC}"
+            (cd "$CALLER_DIR" && bash "$SCRIPT_DIR/Raw.sh" --log .rawjs_cli.js > "$log_file" 2>&1)
+            local log_status=$?
+            
+            # Run Raw.sh with --verbose and capture all terminal output
+            echo -e "${BLUE}Running with --verbose...${NC}"
+            (cd "$CALLER_DIR" && bash "$SCRIPT_DIR/Raw.sh" --verbose .rawjs_cli.js > "$verbose_file" 2>&1)
+            local verbose_status=$?
+            
+            # Report results
+            echo -e "${GREEN}✓ .rawjs_cli.js written with all lines${NC}"
+            echo -e "${GREEN}✓ Log file (--log): $log_file${NC}"
+            echo -e "${GREEN}✓ Verbose file (--verbose): $verbose_file${NC}"
+            
             return 0
         fi
-
-        # Add the line to our tracking array
-        all_lines+=("$user_input")
-        local current_index=$(( ${#all_lines[@]} - 1 ))
-
+        
+        # Append the input to the full script (keeps ALL lines)
+        if [ -n "$full_script" ]; then
+            full_script="$full_script"$'\n'"$user_input"
+        else
+            full_script="$user_input"
+        fi
+        
+        # Save current file content for rollback if needed
         local backup_content=$(cat "$cli_js_file" 2>/dev/null)
         
-        # Build the JS file with only successful lines for execution
-        local exec_content=""
-        for i in "${!all_lines[@]}"; do
-            local is_error=false
-            for err_idx in "${error_line_indices[@]}"; do
-                if [ "$i" = "$err_idx" ]; then
-                    is_error=true
-                    break
-                fi
-            done
-            if [ "$is_error" = false ]; then
-                if [ -n "$exec_content" ]; then
-                    exec_content="$exec_content"$'\n'"${all_lines[$i]}"
-                else
-                    exec_content="${all_lines[$i]}"
-                fi
-            fi
-        done
-        echo "$exec_content" > "$cli_js_file"
-
+        # Append the input to the JS file (temporary – will be rolled back on failure)
+        echo "$user_input" >> "$cli_js_file"
+        
+        # Execute the JS file through the Raw engine
         local output_js="$SCRIPT_DIR/output.js"
         local arch_output="$SCRIPT_DIR/arch_output"
+        
         local compile_success=true
         local compile_error=""
-
-        # Minification step
-        if [ "$compile_success" = true ]; then
-            if ! execute_file "normal" "./._/min/min" "$cli_js_file" > "$cli_log" 2>&1; then
-                compile_success=false
-                compile_error="minification"
-            elif grep -qE "$error_pattern" "$cli_log"; then
-                compile_success=false
-                compile_error="minification (error detected)"
-            fi
+        
+        # Execute minification step
+        if ! execute_file "silent" "./._/min/min" "$cli_js_file" >/dev/null 2>&1; then
+            compile_success=false
+            compile_error="minification"
         fi
-
-        # Polish step
+        
+        # Continue pipeline if minification succeeded
         if [ "$compile_success" = true ]; then
-            if ! execute_file "normal" "./._/min/polish.sh" "$output_js" > "$cli_log" 2>&1; then
+            if ! execute_file "silent" "./._/min/polish.sh" "$output_js" >/dev/null 2>&1; then
                 compile_success=false
                 compile_error="polishing"
-            elif grep -qE "$error_pattern" "$cli_log"; then
-                compile_success=false
-                compile_error="polishing (error detected)"
             fi
         fi
-
-        # Build step
+        
         if [ "$compile_success" = true ]; then
-            if ! execute_file "normal" "./build" > "$cli_log" 2>&1; then
+            if ! execute_file "silent" "./build" >/dev/null 2>&1; then
                 compile_success=false
                 compile_error="build"
-            elif grep -qE "$error_pattern" "$cli_log"; then
-                compile_success=false
-                compile_error="build (error detected)"
             fi
         fi
-
-        # Move build_output.asm and run arch
+        
         if [ "$compile_success" = true ]; then
             mv_file "build_output.asm" "$EXECUTION_SOURCE/build_output.asm" 2>/dev/null
-            if ! execute_file "normal" "./arch" "$output_js" > "$cli_log" 2>&1; then
+            
+            if ! execute_file "silent" "./arch" "$output_js" >/dev/null 2>&1; then
                 compile_success=false
                 compile_error="arch"
-            elif grep -qE "$error_pattern" "$cli_log"; then
-                compile_success=false
-                compile_error="arch (error detected)"
             fi
         fi
-
-        # Move arch_output and run tree/build
+        
         if [ "$compile_success" = true ]; then
             mv_file "arch_output" "$EXECUTION_SOURCE/arch_output" 2>/dev/null
             rm_file "$SCRIPT_DIR/output.js" 2>/dev/null
-            if ! execute_file "normal" "./tree/build.sh" > "$cli_log" 2>&1; then
+            
+            if ! execute_file "silent" "./tree/build.sh" >/dev/null 2>&1; then
                 compile_success=false
                 compile_error="tree/build"
-            elif grep -qE "$error_pattern" "$cli_log"; then
-                compile_success=false
-                compile_error="tree/build (error detected)"
             fi
         fi
-
+        
+        # If compilation failed, rollback and show error
         if [ "$compile_success" = false ]; then
-            # Mark this line as error
-            error_line_indices+=("$current_index")
-            
-            # Rebuild the file without the error line
-            local rebuild_content=""
-            for i in "${!all_lines[@]}"; do
-                local is_error=false
-                for err_idx in "${error_line_indices[@]}"; do
-                    if [ "$i" = "$err_idx" ]; then
-                        is_error=true
-                        break
-                    fi
-                done
-                if [ "$is_error" = false ]; then
-                    if [ -n "$rebuild_content" ]; then
-                        rebuild_content="$rebuild_content"$'\n'"${all_lines[$i]}"
-                    else
-                        rebuild_content="${all_lines[$i]}"
-                    fi
-                fi
-            done
-            echo "$rebuild_content" > "$cli_js_file"
-            
+            echo "$backup_content" > "$cli_js_file"
             rm_file "$SCRIPT_DIR/output.js" 2>/dev/null
             rm_file "$SCRIPT_DIR/arch_output" 2>/dev/null
             rm_file "$SCRIPT_DIR/$EXECUTION_SOURCE/arch_output" 2>/dev/null
             rm_file "$SCRIPT_DIR/$EXECUTION_SOURCE/build_output.asm" 2>/dev/null
+            
+            error_lines+=("$user_input")
             
             echo -e "${RED}✗ Compilation failed!${NC}"
             echo -e "${RED}  Error in: $compile_error step${NC}"
@@ -1258,49 +1231,28 @@ handle_cli() {
             echo ""
             continue
         fi
-
-        # Execute final binary and capture output
-        local current_output
-        current_output=$(execute_file "log" "./build_output.asm" 2>&1)
+        
+        # Execute the final binary and capture output
+        local current_output=$(execute_file "log" "./build_output.asm" 2>&1)
         local execution_success=$?
-
-        # Nuclear fallback: treat output containing error patterns as failure
-        if [ $execution_success -ne 0 ] || grep -qE "$error_pattern" <<< "$current_output"; then
-            # Mark this line as error
-            error_line_indices+=("$current_index")
-            
-            # Rebuild the file without the error line
-            local rebuild_content=""
-            for i in "${!all_lines[@]}"; do
-                local is_error=false
-                for err_idx in "${error_line_indices[@]}"; do
-                    if [ "$i" = "$err_idx" ]; then
-                        is_error=true
-                        break
-                    fi
-                done
-                if [ "$is_error" = false ]; then
-                    if [ -n "$rebuild_content" ]; then
-                        rebuild_content="$rebuild_content"$'\n'"${all_lines[$i]}"
-                    else
-                        rebuild_content="${all_lines[$i]}"
-                    fi
-                fi
-            done
-            echo "$rebuild_content" > "$cli_js_file"
-            
+        
+        # If execution failed, also rollback
+        if [ $execution_success -ne 0 ]; then
+            echo "$backup_content" > "$cli_js_file"
             rm_file "$SCRIPT_DIR/output.js" 2>/dev/null
             rm_file "$SCRIPT_DIR/arch_output" 2>/dev/null
             rm_file "$SCRIPT_DIR/$EXECUTION_SOURCE/arch_output" 2>/dev/null
             rm_file "$SCRIPT_DIR/$EXECUTION_SOURCE/build_output.asm" 2>/dev/null
+            
+            error_lines+=("$user_input")
             
             echo -e "${RED}✗ Execution failed!${NC}"
             echo -e "${YELLOW}  Removed line: $user_input${NC}"
             echo ""
             continue
         fi
-
-        # Extract new output
+        
+        # Extract only the new output
         if [ -n "$previous_output" ]; then
             local new_output=$(diff <(echo "$previous_output") <(echo "$current_output") | grep '^>' | sed 's/^> //')
             if [ -n "$new_output" ]; then
@@ -1309,14 +1261,14 @@ handle_cli() {
         else
             echo "$current_output"
         fi
-
+        
         previous_output="$current_output"
         echo ""
     done
-
-    rm -f "$cli_log"
+    
+    # Clean up temp file
     rm_file "$cli_js_file"
-
+    
     return 0
 }
 
