@@ -1065,7 +1065,6 @@ generate_binary() {
     return $result
 }
 
-# Function: Handle CLI mode
 # Creates an interactive CLI where each line is treated as JS code
 handle_cli() {
     echo -e "${BLUE}========================================${NC}"
@@ -1118,6 +1117,9 @@ handle_cli() {
             continue
         fi
         
+        # Save current file content for rollback if needed
+        local backup_content=$(cat "$cli_js_file" 2>/dev/null)
+        
         # Append the input to the JS file
         echo "$user_input" >> "$cli_js_file"
         
@@ -1127,17 +1129,79 @@ handle_cli() {
         local arch_output="$SCRIPT_DIR/arch_output"
         
         # Execute the processing pipeline silently
-        execute_file "silent" "./._/min/min" "$cli_js_file" >/dev/null 2>&1
-        execute_file "silent" "./._/min/polish.sh" "$output_js" >/dev/null 2>&1
-        execute_file "silent" "./build" >/dev/null 2>&1
-        mv_file "build_output.asm" "$EXECUTION_SOURCE/build_output.asm" 2>/dev/null
-        execute_file "silent" "./arch" "$output_js" >/dev/null 2>&1
-        mv_file "arch_output" "$EXECUTION_SOURCE/arch_output" 2>/dev/null
-        rm_file "$SCRIPT_DIR/output.js" 2>/dev/null
-        execute_file "silent" "./tree/build.sh" >/dev/null 2>&1
+        local compile_success=true
+        local compile_error=""
+        
+        # Execute minification step and check for errors
+        if ! execute_file "silent" "./._/min/min" "$cli_js_file" >/dev/null 2>&1; then
+            compile_success=false
+            compile_error="minification"
+        fi
+        
+        # If minification succeeded, continue with other steps
+        if [ "$compile_success" = true ]; then
+            if ! execute_file "silent" "./._/min/polish.sh" "$output_js" >/dev/null 2>&1; then
+                compile_success=false
+                compile_error="polishing"
+            fi
+        fi
+        
+        # If polishing succeeded, continue with build steps
+        if [ "$compile_success" = true ]; then
+            if ! execute_file "silent" "./build" >/dev/null 2>&1; then
+                compile_success=false
+                compile_error="build"
+            fi
+        fi
+        
+        # If build succeeded, continue with arch and tree/build
+        if [ "$compile_success" = true ]; then
+            mv_file "build_output.asm" "$EXECUTION_SOURCE/build_output.asm" 2>/dev/null
+            
+            if ! execute_file "silent" "./arch" "$output_js" >/dev/null 2>&1; then
+                compile_success=false
+                compile_error="arch"
+            fi
+        fi
+        
+        # If arch succeeded, continue with tree/build
+        if [ "$compile_success" = true ]; then
+            mv_file "arch_output" "$EXECUTION_SOURCE/arch_output" 2>/dev/null
+            rm_file "$SCRIPT_DIR/output.js" 2>/dev/null
+            
+            if ! execute_file "silent" "./tree/build.sh" >/dev/null 2>&1; then
+                compile_success=false
+                compile_error="tree/build"
+            fi
+        fi
+        
+        # If compilation failed, rollback and show error
+        if [ "$compile_success" = false ]; then
+            # Restore the file content without the failed line
+            echo "$backup_content" > "$cli_js_file"
+            
+            # Display compilation error
+            echo -e "${RED}✗ Compilation failed!${NC}"
+            echo -e "${RED}  Error in: $compile_error step${NC}"
+            echo -e "${YELLOW}  Removed line: $user_input${NC}"
+            echo ""
+            continue
+        fi
         
         # Execute the final binary and capture output
         local current_output=$(execute_file "log" "./build_output.asm" 2>&1)
+        local execution_success=$?
+        
+        # If execution failed, also rollback
+        if [ $execution_success -ne 0 ]; then
+            # Restore the file content without the failed line
+            echo "$backup_content" > "$cli_js_file"
+            
+            echo -e "${RED}✗ Execution failed!${NC}"
+            echo -e "${YELLOW}  Removed line: $user_input${NC}"
+            echo ""
+            continue
+        fi
         
         # Extract only the new output (difference from previous)
         if [ -n "$previous_output" ]; then
