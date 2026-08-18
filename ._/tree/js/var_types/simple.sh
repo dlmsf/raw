@@ -2,6 +2,7 @@
 
 # simple.sh - Handler for JavaScript var declarations
 # Determines the type and calls the appropriate script
+# Supports REASSIGNMENT mode (bare assignment) by passing the flag along.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -21,16 +22,21 @@ INPUT_CONTENT=$(cat "$INPUT_FILE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 INPUT_CONTENT="${INPUT_CONTENT%;}"
 
 # Extract variable name and value
+# In reassignment mode, the input does not contain "var", so we parse differently.
 if [[ "$INPUT_CONTENT" =~ ^var[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
     VAR_NAME="${BASH_REMATCH[1]}"
     VAR_VALUE="${BASH_REMATCH[2]}"
-    # Remove surrounding whitespace
-    VAR_VALUE=$(echo "$VAR_VALUE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+elif [[ "$REASSIGNMENT" == "true" && "$INPUT_CONTENT" =~ ^([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+    VAR_NAME="${BASH_REMATCH[1]}"
+    VAR_VALUE="${BASH_REMATCH[2]}"
 else
     echo "Error: Invalid variable declaration format"
     echo "Expected format: var variableName = value"
     exit 1
 fi
+
+# Remove surrounding whitespace
+VAR_VALUE=$(echo "$VAR_VALUE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
 # ----------------------------------------------------------------------
 #  is_arithmetic_expression
@@ -41,7 +47,7 @@ is_arithmetic_expression() {
     local value="$1"
     # Remove all whitespace
     local clean_value=$(echo "$value" | sed 's/[[:space:]]//g')
-    
+   
     # Handle parenthesized expressions recursively
     if [[ "$clean_value" =~ \( ]]; then
         local check_value="$clean_value"
@@ -59,15 +65,15 @@ is_arithmetic_expression() {
         fi
         return 0
     fi
-    
+   
     # Pattern for numbers: decimal, float, scientific notation, hex, octal, binary
     local number_pattern='-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?|-?0[xX][0-9a-fA-F]+|-?0[oO][0-7]+|-?0[bB][01]+'
-    
+   
     # Check if the expression is number (operator number)*
     if [[ "$clean_value" =~ ^${number_pattern}([-+*/%]${number_pattern})*$ ]]; then
         return 0
     fi
-    
+   
     return 1
 }
 
@@ -79,7 +85,7 @@ determine_type() {
     local value="$1"
     # Trim whitespace
     value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    
+   
     # 1. Check for null / undefined
     if [ "$value" = "null" ]; then
         echo "null"
@@ -89,19 +95,19 @@ determine_type() {
         echo "undefined"
         return
     fi
-    
+   
     # 2. Check for boolean
     if [ "$value" = "true" ] || [ "$value" = "false" ]; then
         echo "boolean"
         return
     fi
-    
+   
     # 3. If it contains any quotes, it's definitely a string
     if [[ "$value" =~ [\"\'\`] ]]; then
         echo "string"
         return
     fi
-    
+   
     # 4. Check for arithmetic expressions of any kind
     #    Any value that contains an arithmetic operator or parentheses
     #    is treated as a numeric expression (variables + numbers allowed).
@@ -111,14 +117,14 @@ determine_type() {
         echo "number"
         return
     fi
-    
+   
     # 5. Check for pure numbers (all formats) without operators
     # Decimal integer
     if [[ "$value" =~ ^-?[0-9]+$ ]]; then
         echo "number"
         return
     fi
-    
+   
     # Decimal with decimal point (various formats)
     if [[ "$value" =~ ^-?[0-9]+\.[0-9]*$ ]] || \
        [[ "$value" =~ ^-?\.[0-9]+$ ]] || \
@@ -126,43 +132,43 @@ determine_type() {
         echo "number"
         return
     fi
-    
+   
     # Scientific notation
     if [[ "$value" =~ ^-?[0-9]+(\.[0-9]*)?[eE][+-]?[0-9]+$ ]]; then
         echo "number"
         return
     fi
-    
+   
     # Hex: 0x... or 0X...
     if [[ "$value" =~ ^-?0[xX][0-9a-fA-F]+$ ]]; then
         echo "number"
         return
     fi
-    
+   
     # Octal: 0o... or 0O... (modern JavaScript octal)
     if [[ "$value" =~ ^-?0[oO][0-7]+$ ]]; then
         echo "number"
         return
     fi
-    
+   
     # Binary: 0b... or 0B...
     if [[ "$value" =~ ^-?0[bB][01]+$ ]]; then
         echo "number"
         return
     fi
-    
+   
     # Legacy octal: 0... (but not 0x, 0o, 0b)
     if [[ "$value" =~ ^-?0[0-7]+$ ]] && [[ ! "$value" =~ ^-?0[xXoObB] ]]; then
         echo "number"
         return
     fi
-    
+   
     # 6. Check for variable reference (single identifier)
     if [[ "$value" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
         echo "reference"
         return
     fi
-    
+   
     # 7. Default to string
     echo "string"
 }
@@ -178,6 +184,9 @@ if [ ! -d "./simple" ]; then
     echo "Error: ./simple directory not found"
     exit 1
 fi
+
+# Export REASSIGNMENT for child scripts
+export REASSIGNMENT="${REASSIGNMENT:-false}"
 
 # Call the appropriate script based on type
 case "$TYPE" in

@@ -6,6 +6,7 @@
 # ------------------------------------------------------------
 # NEW: Directly handles "var x = y" (variable reference copy)
 #      inside this script, without delegating to simple.sh.
+#      Also supports REASSIGNMENT mode (bare assignment).
 # ============================================================
 
 set -o nounset    # Treat unset variables as an error
@@ -36,16 +37,22 @@ INPUT_CONTENT=$(tr -d '\n' < "$INPUT_FILE" | sed 's/^[[:space:]]*//;s/[[:space:]
 # ------------------------------------------------------------
 # Extract variable name and value from a declaration like:
 #   var name = value;
+# For reassignment mode, the input may not contain "var" keyword.
+# We still parse it as if it were a declaration, using the variable name.
 # ------------------------------------------------------------
 if [[ "$INPUT_CONTENT" =~ ^var[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
     VAR_NAME="${BASH_REMATCH[1]}"
     VAR_VALUE="${BASH_REMATCH[2]}"
-    # Remove an optional trailing semicolon
-    VAR_VALUE="${VAR_VALUE%;}"
+elif [[ "$REASSIGNMENT" == "true" && "$INPUT_CONTENT" =~ ^([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+    VAR_NAME="${BASH_REMATCH[1]}"
+    VAR_VALUE="${BASH_REMATCH[2]}"
 else
     echo "Error: Invalid variable declaration format"
     exit 1
 fi
+
+# Remove an optional trailing semicolon
+VAR_VALUE="${VAR_VALUE%;}"
 
 # Export so that the type handler scripts can use them
 export VAR_NAME
@@ -527,6 +534,7 @@ insert_assembly_sections() {
 #   Called when VAR_VALUE is a single identifier (e.g. "othervariable").
 #   Generates assembly that copies the value and type from the source
 #   variable to the new variable at runtime.
+#   In REASSIGNMENT mode, only generates code (no data section).
 # ----------------------------------------------------------------------
 handle_variable_reference() {
     local new_var="$1"
@@ -546,15 +554,41 @@ handle_variable_reference() {
     local data_section=""
     local code_section=""
 
+    # In reassignment mode, we do not need a data section.
+    if [[ "$REASSIGNMENT" != "true" ]]; then
+        case "$source_type" in
+            float)
+                data_section=$'    ; =========================================\n'
+                data_section+=$'    ; Variable: '"$new_var"$' (copy of '"$source_var"$')\n'
+                data_section+=$'    ; Type: FLOAT (copy)\n'
+                data_section+=$'    ; =========================================\n'
+                data_section+="    ${new_var} dq 0"$'\n'
+                data_section+="    ${new_var}_float_val dq 0"$'\n'
+                data_section+="    ${new_var}_type dq TYPE_FLOAT"$'\n'
+                ;;
+            number|int|integer)
+                data_section=$'    ; =========================================\n'
+                data_section+=$'    ; Variable: '"$new_var"$' (copy of '"$source_var"$')\n'
+                data_section+=$'    ; Type: NUMBER (copy)\n'
+                data_section+=$'    ; =========================================\n'
+                data_section+="    ${new_var} dq 0"$'\n'
+                data_section+="    ${new_var}_type dq TYPE_NUMBER"$'\n'
+                ;;
+            *)
+                local upper_type=$(echo "$source_type" | tr '[:lower:]' '[:upper:]')
+                data_section=$'    ; =========================================\n'
+                data_section+=$'    ; Variable: '"$new_var"$' (copy of '"$source_var"$')\n'
+                data_section+=$'    ; Type: '"$upper_type"$' (copy)\n'
+                data_section+=$'    ; =========================================\n'
+                data_section+="    ${new_var} dq 0"$'\n'
+                data_section+="    ${new_var}_type dq TYPE_${upper_type}"$'\n'
+                ;;
+        esac
+    fi
+
+    # Code section is always generated
     case "$source_type" in
         float)
-            data_section=$'    ; =========================================\n'
-            data_section+=$'    ; Variable: '"$new_var"$' (copy of '"$source_var"$')\n'
-            data_section+=$'    ; Type: FLOAT (copy)\n'
-            data_section+=$'    ; =========================================\n'
-            data_section+="    ${new_var} dq 0"$'\n'
-            data_section+="    ${new_var}_float_val dq 0"$'\n'
-            data_section+="    ${new_var}_type dq TYPE_FLOAT"$'\n'
             code_section=$'    ; Copy float variable '"$source_var"$' to '"$new_var"$'\n'
             code_section+="    mov rax, qword [${source_var}_float_val]"$'\n'
             code_section+="    mov qword [${new_var}_float_val], rax"$'\n'
@@ -564,41 +598,29 @@ handle_variable_reference() {
             code_section+="    mov qword [${new_var}_type], rax"$'\n'
             ;;
         number|int|integer)
-            data_section=$'    ; =========================================\n'
-            data_section+=$'    ; Variable: '"$new_var"$' (copy of '"$source_var"$')\n'
-            data_section+=$'    ; Type: NUMBER (copy)\n'
-            data_section+=$'    ; =========================================\n'
-            data_section+="    ${new_var} dq 0"$'\n'
-            data_section+="    ${new_var}_type dq TYPE_NUMBER"$'\n'
             code_section=$'    ; Copy integer variable '"$source_var"$' to '"$new_var"$'\n'
             code_section+="    mov rax, qword [${source_var}]"$'\n'
             code_section+="    mov qword [${new_var}], rax"$'\n'
             code_section+="    mov rax, qword [${source_var}_type]"$'\n'
             code_section+="    mov qword [${new_var}_type], rax"$'\n'
             ;;
-        string|boolean|null|undefined)
+        *)
             local upper_type=$(echo "$source_type" | tr '[:lower:]' '[:upper:]')
-            data_section=$'    ; =========================================\n'
-            data_section+=$'    ; Variable: '"$new_var"$' (copy of '"$source_var"$')\n'
-            data_section+=$'    ; Type: '"$upper_type"$' (copy)\n'
-            data_section+=$'    ; =========================================\n'
-            data_section+="    ${new_var} dq 0"$'\n'
-            data_section+="    ${new_var}_type dq TYPE_${upper_type}"$'\n'
             code_section=$'    ; Copy variable '"$source_var"$' to '"$new_var"$'\n'
             code_section+="    mov rax, qword [${source_var}]"$'\n'
             code_section+="    mov qword [${new_var}], rax"$'\n'
             code_section+="    mov rax, qword [${source_var}_type]"$'\n'
             code_section+="    mov qword [${new_var}_type], rax"$'\n'
             ;;
-        *)
-            echo "Error: Unsupported source type '$source_type' for reference assignment"
-            exit 1
-            ;;
     esac
 
     insert_assembly_sections "$data_section" "$code_section"
 
-    echo "✓ Successfully copied variable $source_var to $new_var"
+    if [[ "$REASSIGNMENT" == "true" ]]; then
+        echo "✓ Successfully reassigned variable $new_var from $source_var"
+    else
+        echo "✓ Successfully copied variable $source_var to $new_var"
+    fi
     echo "  - Type: $source_type"
     echo "  - Value copied at assembly runtime"
 }
@@ -610,6 +632,7 @@ handle_variable_reference() {
 # ------------------------------------------------------------
 # NEW: Check for direct variable reference assignment
 #      e.g.  var teste = othervariable
+#      Also catches reassignment mode (bare assignment)
 # ------------------------------------------------------------
 if [[ "$VAR_VALUE" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] && \
    [[ "$VAR_VALUE" != "null" && "$VAR_VALUE" != "undefined" && \
@@ -647,6 +670,8 @@ if [ ! -f "$TYPE_HANDLER" ]; then
     exit 1
 fi
 
+# Pass the REASSIGNMENT flag to the type handler
+export REASSIGNMENT="${REASSIGNMENT:-false}"
 echo "Executing handler: $TYPE_HANDLER"
 bash "$TYPE_HANDLER"
 exit $?
