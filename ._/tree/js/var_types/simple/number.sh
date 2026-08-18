@@ -14,6 +14,9 @@ INPUT_FILE="../../var_input"
 
 REASSIGNMENT="${REASSIGNMENT:-false}"
 
+# Initialize rpn_tokens as an empty array to satisfy set -u
+rpn_tokens=()
+
 if [ ! -f "$INPUT_FILE" ]; then
     echo "Error: $INPUT_FILE not found"
     exit 1
@@ -270,9 +273,9 @@ generate_full_asm() {
             if [[ "$token" == FLOAT:* ]]; then
                 local val="${token#*:}"
                 if [[ "$mode" == "declare" ]]; then
-                    DATA_SECTION+="    ${VAR_NAME}_float${const_idx} dd ${val}"$'\n'
+                    DATA_SECTION+="    ${VAR_NAME}_float${const_idx} dq ${val}"$'\n'
                 else
-                    DATA_SECTION+="    ${VAR_NAME}_reassign_float${uniq_suffix}_${const_idx} dd ${val}"$'\n'
+                    DATA_SECTION+="    ${VAR_NAME}_reassign_float${uniq_suffix}_${const_idx} dq ${val}"$'\n'
                 fi
                 const_idx=$((const_idx+1))
             fi
@@ -309,10 +312,10 @@ generate_full_asm() {
         elif [ "$type" = "FLOAT" ]; then
             if [[ "$mode" == "declare" ]]; then
                 CODE_SECTION+="    ; Load float constant ${VAR_NAME}_float${const_idx}"$'\n'
-                CODE_SECTION+="    fld dword [${VAR_NAME}_float${const_idx}]"$'\n'
+                CODE_SECTION+="    fld qword [${VAR_NAME}_float${const_idx}]"$'\n'
             else
                 CODE_SECTION+="    ; Load float constant ${VAR_NAME}_reassign_float${uniq_suffix}_${const_idx}"$'\n'
-                CODE_SECTION+="    fld dword [${VAR_NAME}_reassign_float${uniq_suffix}_${const_idx}]"$'\n'
+                CODE_SECTION+="    fld qword [${VAR_NAME}_reassign_float${uniq_suffix}_${const_idx}]"$'\n'
             fi
             const_idx=$((const_idx+1))
         elif [ "$type" = "VAR" ]; then
@@ -511,10 +514,10 @@ else
                 DATA_SECTION+="    ${VAR_NAME}_float_val dq 0"$'\n'
                 DATA_SECTION+="    ${VAR_NAME}_str times 32 db 0"$'\n'
                 DATA_SECTION+="    ${VAR_NAME} dq ${VAR_NAME}_str"$'\n'
-                DATA_SECTION+="    ${VAR_NAME}_float dd $FLOAT_VAL"$'\n'
+                DATA_SECTION+="    ${VAR_NAME}_float dq $FLOAT_VAL"$'\n'
                 DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_FLOAT"$'\n'
                 CODE_SECTION="    ; Initialize float value at runtime"$'\n'
-                CODE_SECTION+="    fld dword [${VAR_NAME}_float]"$'\n'
+                CODE_SECTION+="    fld qword [${VAR_NAME}_float]"$'\n'
                 CODE_SECTION+="    fstp qword [${VAR_NAME}_float_val]"$'\n'
                 CODE_SECTION+="    mov rdi, ${VAR_NAME}_str"$'\n'
                 CODE_SECTION+="    movsd xmm0, [${VAR_NAME}_float_val]"$'\n'
@@ -524,11 +527,11 @@ else
                 CODE_SECTION+="    mov qword [${VAR_NAME}_type], TYPE_FLOAT"$'\n'
                 CODE_SECTION+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
             else
-                local uniq_suffix="$$"
+                uniq_suffix="$$"
                 DATA_SECTION="    ; Temporary float constant for reassignment"$'\n'
-                DATA_SECTION+="    ${VAR_NAME}_reassign_float${uniq_suffix}_0 dd $FLOAT_VAL"$'\n'
+                DATA_SECTION+="    ${VAR_NAME}_reassign_float${uniq_suffix}_0 dq $FLOAT_VAL"$'\n'
                 CODE_SECTION="    ; Reassign float variable: $VAR_NAME = $tval"$'\n'
-                CODE_SECTION+="    fld dword [${VAR_NAME}_reassign_float${uniq_suffix}_0]"$'\n'
+                CODE_SECTION+="    fld qword [${VAR_NAME}_reassign_float${uniq_suffix}_0]"$'\n'
                 CODE_SECTION+="    fstp qword [${VAR_NAME}_float_val]"$'\n'
                 CODE_SECTION+="    mov rdi, ${VAR_NAME}_str"$'\n'
                 CODE_SECTION+="    movsd xmm0, [${VAR_NAME}_float_val]"$'\n'
@@ -643,7 +646,7 @@ else
         echo "✓ Successfully added integer variable: $VAR_NAME = $VAR_VALUE"
     fi
     echo "  - Runtime type tag: TYPE_NUMBER"
-    if [ -n "$rpn_tokens" ]; then
+    if [ ${#rpn_tokens[@]} -gt 0 ]; then
         echo "  - Expression evaluated at assembly runtime"
     else
         echo "  - Literal value stored directly"
