@@ -28,8 +28,13 @@ ERROR_FULL_MODE=false
 # Function to strip ANSI escape sequences from output
 strip_ansi_codes() {
     local input="$1"
-    # Remove ANSI escape sequences using perl (more reliable than sed for this)
-    echo "$input" | perl -pe 's/\e\[[0-9;]*[a-zA-Z]//g; s/\e\[[0-9;]*[!@#$%^&*()_+\-=\[\]{}|;:.?~`]//g; s/\e[()][AB012]//g; s/\e\[[0-9;]*[mK]//g; s/\x{1B}\[[0-9;]*[mK]//g; s/\x{1B}\]8;;[^\\]*\\//g; s/\x{1B}\\[0-9;]*[a-zA-Z]//g;'
+    
+    # Use sed with simpler patterns that work on both GNU and BusyBox sed
+    # First pattern: Remove standard ANSI color codes (ESC[ ... m)
+    # Second pattern: Remove other ANSI escape sequences (ESC[ ... K, etc.)
+    # Third pattern: Remove ESC] (OSC) sequences
+    # Fourth pattern: Remove remaining ESC sequences
+    echo "$input" | sed -E 's/\x1b\[[0-9;]*[mK]//g; s/\x1b\][^\x07\x1b]*(\x07|\x1b\\)//g; s/\x1b[()][AB012]//g; s/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b[^a-zA-Z]*[a-zA-Z]//g'
 }
 
 # ============================================
