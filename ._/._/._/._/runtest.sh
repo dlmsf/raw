@@ -6,8 +6,95 @@
 #   ./runtest.sh --save    # Execute and save node outputs to .sh files
 #   ./runtest.sh --saveforce # Execute and force overwrite saved node outputs
 #   ./runtest.sh --cached  # Force using saved outputs (no node required)
+#   ./runtest.sh --error   # Enable error logging with verbose mode rerun
+#   ./runtest.sh --errorfull # Enable full error logging (verbose + JS code + ASM output)
+#   ./runtest.sh --help    # Show help message
 
 set -e
+
+# ============================================
+# ERROR LOGGING MODULE
+# ============================================
+# Capture caller's directory before any cd operations
+if [[ -n "$OLDPWD" ]]; then
+    CALLER_DIR="$OLDPWD"
+else
+    CALLER_DIR="$(pwd)"
+fi
+ERROR_LOG="${CALLER_DIR}/errorlog.txt"
+ERROR_MODE=false
+ERROR_FULL_MODE=false
+
+# ============================================
+# HELP FUNCTION
+# ============================================
+show_help() {
+    cat << 'HELP_EOF'
+╔══════════════════════════════════════════════════════════════╗
+║                    runtest.sh - Test Runner                   ║
+╚══════════════════════════════════════════════════════════════╝
+
+DESCRIPTION:
+    Runs tests with generated JS files recursively through the test directory.
+    Executes generator scripts (.sh) to create .js files, then runs dual.sh
+    for each generated JS file.
+
+USAGE:
+    ./runtest.sh [OPTIONS]
+
+OPTIONS:
+    -h, --help, -help, --h
+        Show this help message and exit.
+
+    --save
+        Execute tests normally and save Node.js outputs as .sh cache files.
+        Requires Node.js to be installed.
+        Skips saving if cache file already exists.
+
+    --saveforce
+        Execute tests normally and force save Node.js outputs as .sh cache files.
+        Requires Node.js to be installed.
+        Overwrites existing cache files.
+
+    --cached
+        Force using pre-saved outputs from .test_cache directory.
+        Does not require Node.js.
+        Cache files must be generated first using --save on a system with Node.js.
+
+    --error
+        Enable error logging with verbose mode rerun on failures.
+        Saves errors to errorlog.txt in the caller's directory.
+        Each failed test triggers a rerun with --verbose mode.
+
+    --errorfull
+        Enable full error logging with comprehensive diagnostics on failures.
+        Includes:
+          - Difference output from dual.sh
+          - Verbose mode output (Raw.sh --verbose)
+          - Complete JS source code
+          - ASM output (Raw.sh --asm) - generated assembly file
+        Saves everything to errorlog.txt in the caller's directory.
+
+EXAMPLES:
+    ./runtest.sh                  # Normal execution (node or cached)
+    ./runtest.sh --save           # Save node outputs for later use
+    ./runtest.sh --cached         # Run using only cached outputs
+    ./runtest.sh --error          # Log errors with verbose rerun
+    ./runtest.sh --errorfull      # Full error diagnostics
+    ./runtest.sh --save --error   # Save node outputs AND log errors
+
+NOTES:
+    - --save and --cached cannot be used together
+    - --saveforce and --cached cannot be used together
+    - --save and --saveforce cannot be used together
+    - --error and --errorfull can be combined with any execution mode
+    - If Node.js is not available and no cache exists, the script will error
+    - If Node.js is not available but cache exists, it auto-falls back to cached mode
+    - Cache files are stored in .test_cache/node_outputs/
+
+HELP_EOF
+    exit 0
+}
 
 # Parse arguments
 SAVE_MODE=false
@@ -29,9 +116,20 @@ for arg in "$@"; do
             CACHED_MODE=true
             AUTO_MODE=false
             ;;
+        --error)
+            ERROR_MODE=true
+            ;;
+        --errorfull)
+            ERROR_FULL_MODE=true
+            ERROR_MODE=true  # errorfull implies error mode
+            ;;
+        --help|-h|-help|--h)
+            show_help
+            ;;
         *)
             echo -e "\033[0;31m\033[1mError:\033[0m Unknown argument: $arg"
-            echo "Usage: $0 [--save | --saveforce | --cached]"
+            echo "Usage: $0 [--save | --saveforce | --cached] [--error | --errorfull] [--help]"
+            echo "Run '$0 --help' for more information"
             exit 1
             ;;
     esac
@@ -100,6 +198,30 @@ TESTS_DIR="${SCRIPT_DIR}/tests"
 DUAL_SCRIPT="${SCRIPT_DIR}/dual.sh"
 NODE_CACHE_DIR="${CACHE_DIR}/node_outputs"
 
+# Find Raw.sh - navigate up from SCRIPT_DIR to find it
+RAW_SCRIPT=""
+CURRENT_DIR="$SCRIPT_DIR"
+for i in {1..6}; do
+    if [[ -f "${CURRENT_DIR}/Raw.sh" ]]; then
+        RAW_SCRIPT="${CURRENT_DIR}/Raw.sh"
+        break
+    fi
+    CURRENT_DIR="$(dirname "$CURRENT_DIR")"
+done
+
+# If not found by navigating up, try to find it in the filesystem
+if [[ -z "$RAW_SCRIPT" ]]; then
+    # Search for Raw.sh in parent directories
+    SEARCH_DIR="$SCRIPT_DIR"
+    for i in {1..6}; do
+        SEARCH_DIR="$(dirname "$SEARCH_DIR")"
+        if [[ -f "${SEARCH_DIR}/Raw.sh" ]]; then
+            RAW_SCRIPT="${SEARCH_DIR}/Raw.sh"
+            break
+        fi
+    done
+fi
+
 
 # Color definitions
 BOLD='\033[1m'
@@ -129,6 +251,186 @@ if [[ ! -d "$TESTS_DIR" ]]; then
     echo -e "${RED}${BOLD}Error:${RESET} tests directory not found at ${TESTS_DIR}"
     exit 1
 fi
+
+# ============================================
+# ERROR LOGGING FUNCTIONS
+# ============================================
+init_error_log() {
+    if [[ "$ERROR_MODE" == true ]]; then
+        echo "Error Log - Generated by runtest.sh $([ "$ERROR_FULL_MODE" == true ] && echo '--errorfull' || echo '--error')" > "$ERROR_LOG"
+        echo "Started at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$ERROR_LOG"
+        echo "Caller Directory: ${CALLER_DIR}" >> "$ERROR_LOG"
+        echo "Script Directory: ${SCRIPT_DIR}" >> "$ERROR_LOG"
+        echo "Raw.sh Location: ${RAW_SCRIPT}" >> "$ERROR_LOG"
+        echo "Error Mode: $([ "$ERROR_FULL_MODE" == true ] && echo 'FULL' || echo 'VERBOSE')" >> "$ERROR_LOG"
+        echo "=========================================" >> "$ERROR_LOG"
+        echo "" >> "$ERROR_LOG"
+        
+        if [[ "$ERROR_FULL_MODE" == true ]]; then
+            echo -e "${YELLOW}${BOLD}Full error logging enabled${RESET} - Will save comprehensive diagnostics to: $ERROR_LOG"
+        else
+            echo -e "${YELLOW}${BOLD}Error logging enabled${RESET} - Will save errors to: $ERROR_LOG"
+        fi
+        
+        if [[ -n "$RAW_SCRIPT" ]]; then
+            echo -e "${YELLOW}${BOLD}Raw.sh found at:${RESET} $RAW_SCRIPT"
+        else
+            echo -e "${RED}${BOLD}Warning:${RESET} Raw.sh not found, verbose mode will not be captured"
+        fi
+    fi
+}
+
+log_error() {
+    local error_message="$1"
+    local test_info="$2"
+    
+    if [[ "$ERROR_MODE" == true ]]; then
+        {
+            echo "========================================="
+            echo "Error detected at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo "Test: ${test_info}"
+            echo "Error: ${error_message}"
+            echo ""
+        } >> "$ERROR_LOG"
+    fi
+}
+
+# Function to capture JS source code for errorfull mode
+capture_js_source() {
+    local test_path="$1"
+    local js_source=""
+    
+    if [[ -f "$test_path" ]]; then
+        js_source=$(cat "$test_path" 2>&1 || echo "Failed to read JS source file")
+    else
+        js_source="JS file not found: $test_path"
+    fi
+    
+    echo "$js_source"
+}
+
+# Function to capture ASM output for errorfull mode
+capture_asm_output() {
+    local test_path="$1"
+    local asm_output=""
+    local asm_exit=1
+    
+    if [[ -n "$RAW_SCRIPT" ]] && [[ -f "$RAW_SCRIPT" ]]; then
+        # Run Raw.sh with --asm flag
+        asm_output=$(bash "$RAW_SCRIPT" --asm "$test_path" 2>&1 || true)
+        asm_exit=$?
+        
+        # Look for the build_output.asm file that was mentioned in the output
+        local asm_file=""
+        
+        # First, try to find build_output.asm in the test directory
+        local test_dir=$(dirname "$test_path")
+        if [[ -f "${test_dir}/build_output.asm" ]]; then
+            asm_file="${test_dir}/build_output.asm"
+        else
+            # Try to extract the path from the output message
+            local asm_path=$(echo "$asm_output" | grep -oP 'copied to: \K.*build_output\.asm' | head -1)
+            if [[ -n "$asm_path" ]] && [[ -f "$asm_path" ]]; then
+                asm_file="$asm_path"
+            fi
+        fi
+        
+        if [[ -n "$asm_file" ]] && [[ -f "$asm_file" ]]; then
+            asm_output="${asm_output}
+--- Generated .asm File Content (from: ${asm_file}) ---
+$(cat "$asm_file" 2>&1 || echo 'Failed to read .asm file')"
+        else
+            # Search for any .asm file in the test directory
+            local found_asm=$(find "$test_dir" -maxdepth 1 -name "*.asm" -type f 2>/dev/null | head -1)
+            if [[ -n "$found_asm" ]] && [[ -f "$found_asm" ]]; then
+                asm_output="${asm_output}
+--- Generated .asm File Content (from: ${found_asm}) ---
+$(cat "$found_asm" 2>&1 || echo 'Failed to read .asm file')"
+            else
+                asm_output="${asm_output}
+--- Warning: No .asm file found in ${test_dir} or mentioned in output ---"
+            fi
+        fi
+    else
+        asm_output="Raw.sh not found at ${RAW_SCRIPT:-unknown location}"
+        asm_exit=1
+    fi
+    
+    echo "--- ASM Mode Output ---"
+    echo "Command: bash $RAW_SCRIPT --asm $test_path"
+    echo "Exit Code: ${asm_exit}"
+    echo ""
+    echo "$asm_output"
+}
+
+rerun_verbose_on_error() {
+    local test_path="$1"
+    local test_info="$2"
+    local error_code="$3"
+    local diff_output="$4"
+    
+    if [[ "$ERROR_MODE" == true ]]; then
+        echo -e "${YELLOW}${BOLD}Error detected - Running with --verbose mode...${RESET}"
+        
+        # Run the test again with --verbose mode using Raw.sh
+        local verbose_output=""
+        local verbose_exit=1
+        
+        if [[ -n "$RAW_SCRIPT" ]] && [[ -f "$RAW_SCRIPT" ]]; then
+            verbose_output=$(bash "$RAW_SCRIPT" --verbose "$test_path" 2>&1 || true)
+            verbose_exit=$?
+        else
+            verbose_output="Raw.sh not found at ${RAW_SCRIPT:-unknown location}"
+        fi
+        
+        # Append the difference output and verbose output to error log
+        {
+            echo "--- Difference Output ---"
+            echo "$diff_output"
+            echo ""
+            echo "--- Verbose Mode Output ---"
+            echo "Command: bash $RAW_SCRIPT --verbose $test_path"
+            echo "Exit Code: ${verbose_exit}"
+            echo ""
+            echo "$verbose_output"
+            echo ""
+        } >> "$ERROR_LOG"
+        
+        # If errorfull mode, also capture JS source and ASM output
+        if [[ "$ERROR_FULL_MODE" == true ]]; then
+            echo -e "${YELLOW}${BOLD}Capturing full error diagnostics (JS + ASM)...${RESET}"
+            
+            # Capture JS source
+            local js_source=$(capture_js_source "$test_path")
+            
+            # Capture ASM output
+            local asm_output=$(capture_asm_output "$test_path")
+            
+            {
+                echo "--- Complete JS Source Code ---"
+                echo "File: ${test_path}"
+                echo ""
+                echo "$js_source"
+                echo ""
+                echo "$asm_output"
+                echo ""
+                echo "========================================="
+                echo ""
+            } >> "$ERROR_LOG"
+        else
+            {
+                echo "========================================="
+                echo ""
+            } >> "$ERROR_LOG"
+        fi
+        
+        echo -e "${RED}${BOLD}Complete output saved to:${RESET} $ERROR_LOG"
+        echo -e "${YELLOW}${BOLD}Continuing to next test...${RESET}"
+    fi
+}
+
+# Initialize error log if enabled
+init_error_log
 
 # Auto-detect mode based on node availability and cache existence
 NODE_AVAILABLE=false
@@ -342,6 +644,7 @@ process_test_directory() {
                 
                 if [[ ! -f "${test_num}.js" ]]; then
                     echo -e "${YELLOW}${BOLD}Warning:${RESET} ${test_num}.js was not generated by ${sh_file}"
+                    log_error "Generator ${sh_file} did not produce ${test_num}.js" "${group_name}/${test_num}"
                 else
                     echo -e "${GREEN}Generated:${RESET} ${test_num}.js"
                 fi
@@ -390,6 +693,7 @@ process_test_directory() {
                         else
                             failed_tests["$group_name"]="${failed_tests[$group_name]} ${test_num}"
                         fi
+                        log_error "Cache file not found: ${node_cache_file}" "${group_name}/${test_num}"
                     else
                         # Create a temporary node wrapper that returns cached output
                         local node_wrapper=$(create_node_wrapper "$test_path" "$node_cache_file")
@@ -418,6 +722,13 @@ process_test_directory() {
                             else
                                 failed_tests["$group_name"]="${failed_tests[$group_name]} ${test_num}"
                             fi
+                            
+                            # Capture the diff output from the failed test
+                            local diff_output
+                            diff_output=$(bash "$DUAL_SCRIPT" "$test_path" 2>&1 || true)
+                            
+                            log_error "Test failed with exit code: ${exit_code}" "${group_name}/${test_num}"
+                            rerun_verbose_on_error "$test_path" "${group_name}/${test_num}" "$exit_code" "$diff_output"
                         fi
                         
                         # Restore original PATH and cleanup
@@ -442,6 +753,13 @@ process_test_directory() {
                         else
                             failed_tests["$group_name"]="${failed_tests[$group_name]} ${test_num}"
                         fi
+                        
+                        # Capture the diff output from the failed test
+                        local diff_output
+                        diff_output=$(bash "$DUAL_SCRIPT" "$test_path" 2>&1 || true)
+                        
+                        log_error "Test failed with exit code: ${exit_code}" "${group_name}/${test_num}"
+                        rerun_verbose_on_error "$test_path" "${group_name}/${test_num}" "$exit_code" "$diff_output"
                     fi
                     
                     # Save node output if in save mode
@@ -492,6 +810,12 @@ elif [[ "$CACHED_MODE" == true ]]; then
     fi
 else
     echo -e "${GREEN}${BOLD}Mode: NORMAL${RESET} - Using Node.js for execution"
+fi
+
+if [[ "$ERROR_FULL_MODE" == true ]]; then
+    echo -e "${RED}${BOLD}Error Logging: FULL${RESET} - Comprehensive diagnostics will be saved to: $ERROR_LOG"
+elif [[ "$ERROR_MODE" == true ]]; then
+    echo -e "${RED}${BOLD}Error Logging: ENABLED${RESET} - Errors will be saved to: $ERROR_LOG"
 fi
 echo ""
 
@@ -608,6 +932,24 @@ elif [[ "$CACHED_MODE" == true ]]; then
 else
     echo -e "${GREEN}${BOLD}Execution mode: NORMAL${RESET} - Node.js was used for all tests"
     echo -e "${DIM}Use --save to create cache for Node.js-less systems${RESET}"
+fi
+
+# Display error log information if in error mode
+if [[ "$ERROR_MODE" == true ]]; then
+    if [[ $total_failed -gt 0 ]]; then
+        echo ""
+        echo -e "${RED}${BOLD}✗ Errors detected!${RESET}"
+        echo -e "${RED}${BOLD}Error log saved to:${RESET} $ERROR_LOG"
+        if [[ "$ERROR_FULL_MODE" == true ]]; then
+            echo -e "${YELLOW}The error log contains comprehensive diagnostics (verbose + JS + ASM) for each failed test${RESET}"
+        else
+            echo -e "${YELLOW}The error log contains verbose outputs for each failed test${RESET}"
+        fi
+    else
+        echo ""
+        echo -e "${GREEN}${BOLD}✓ No errors detected!${RESET}"
+        echo -e "${GREEN}${BOLD}Error log is empty:${RESET} $ERROR_LOG"
+    fi
 fi
 
 # Exit with non-zero if any tests failed
