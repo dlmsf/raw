@@ -1,11 +1,10 @@
 #!/bin/bash
 
 # number.sh - Converts JavaScript number declarations to NASM assembly code
-# Rewritten to support variables in expressions. All evaluation happens at assembly runtime.
-# Variables from previous declarations are recognized and loaded appropriately.
-# Supports REASSIGNMENT mode: only generates code to update existing variable.
+# Supports variables in expressions, runtime evaluation, and reassignment.
+# All variables get storage for both integer and float representation.
 
-set -x  # Debug: show commands being executed
+set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
 cd "$SCRIPT_DIR/simple"
@@ -13,7 +12,6 @@ cd "$SCRIPT_DIR/simple"
 OUTPUT_FILE="../../../../build_output.asm"
 INPUT_FILE="../../var_input"
 
-# Default REASSIGNMENT to false if not set
 REASSIGNMENT="${REASSIGNMENT:-false}"
 
 if [ ! -f "$INPUT_FILE" ]; then
@@ -21,12 +19,9 @@ if [ ! -f "$INPUT_FILE" ]; then
     exit 1
 fi
 
-# Read and clean the input
 INPUT_CONTENT=$(cat "$INPUT_FILE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 INPUT_CONTENT="${INPUT_CONTENT%;}"
 
-# Extract variable name and value
-# In reassignment mode, the input lacks the "var" keyword.
 if [[ "$INPUT_CONTENT" =~ ^var[[:space:]]+([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
     VAR_NAME="${BASH_REMATCH[1]}"
     VAR_VALUE="${BASH_REMATCH[2]}"
@@ -42,46 +37,58 @@ VAR_VALUE=$(echo "$VAR_VALUE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
 # ----------------------------------------------------------------------
 # Load existing variable types from build_output.asm
+# Now scans BOTH static data (dq) and runtime assignments (mov)
+# and keeps the LATEST occurrence for each variable.
 # ----------------------------------------------------------------------
 declare -A VAR_TYPE
 
 load_variable_types() {
+    VAR_TYPE=()
     while IFS= read -r line; do
-        if [[ "$line" =~ ^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)_type[[:space:]]+dq[[:space:]]+TYPE_FLOAT ]]; then
-            VAR_TYPE["${BASH_REMATCH[1]}"]="float"
-        elif [[ "$line" =~ ^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)_type[[:space:]]+dq[[:space:]]+TYPE_NUMBER ]]; then
-            VAR_TYPE["${BASH_REMATCH[1]}"]="int"
+        # Static: varname_type dq TYPE_FLOAT/NUMBER
+        if [[ "$line" =~ ^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)_type[[:space:]]+dq[[:space:]]+TYPE_(FLOAT|NUMBER) ]]; then
+            local var_name="${BASH_REMATCH[1]}"
+            local type_name="${BASH_REMATCH[2]}"
+            if [[ "$type_name" == "FLOAT" ]]; then
+                VAR_TYPE["$var_name"]="float"
+            else
+                VAR_TYPE["$var_name"]="int"
+            fi
         fi
-    done < <(grep -E '^\s*[a-zA-Z_][a-zA-Z0-9_]*_type\s+dq\s+TYPE_(FLOAT|NUMBER)' "$OUTPUT_FILE" 2>/dev/null || true)
+        # Runtime: mov qword [varname_type], TYPE_FLOAT/NUMBER
+        if [[ "$line" =~ ^[[:space:]]*mov[[:space:]]+qword[[:space:]]+\[([a-zA-Z_][a-zA-Z0-9_]*)_type\][[:space:]]*,[[:space:]]*TYPE_(FLOAT|NUMBER) ]]; then
+            local var_name="${BASH_REMATCH[1]}"
+            local type_name="${BASH_REMATCH[2]}"
+            if [[ "$type_name" == "FLOAT" ]]; then
+                VAR_TYPE["$var_name"]="float"
+            else
+                VAR_TYPE["$var_name"]="int"
+            fi
+        fi
+    done < "$OUTPUT_FILE"
 }
 
 load_variable_types
 
 # ----------------------------------------------------------------------
-# Tokenizer - handles integers, floats, variables, and parentheses
+# Tokenizer
 # ----------------------------------------------------------------------
 tokenize() {
     local expr="$1"
     local tokens=()
     local i=0
     local len=${#expr}
-   
     while [ $i -lt $len ]; do
         local c="${expr:$i:1}"
-       
-        # Skip whitespace
         if [[ "$c" =~ [[:space:]] ]]; then
             i=$((i+1))
             continue
         fi
-       
-        # Number (integer or float)
         if [[ "$c" =~ [0-9] ]] || [[ "$c" == "." ]]; then
             local num="$c"
             i=$((i+1))
             local has_dot=false
             [[ "$c" == "." ]] && has_dot=true
-           
             while [ $i -lt $len ]; do
                 local nc="${expr:$i:1}"
                 if [[ "$nc" =~ [0-9] ]]; then
@@ -105,7 +112,6 @@ tokenize() {
                     break
                 fi
             done
-           
             if [[ "$num" =~ \. ]] || [[ "$num" =~ [eE] ]]; then
                 tokens+=("FLOAT:$num")
             else
@@ -113,8 +119,6 @@ tokenize() {
             fi
             continue
         fi
-       
-        # Variable / identifier
         if [[ "$c" =~ [a-zA-Z_] ]]; then
             local name="$c"
             i=$((i+1))
@@ -127,7 +131,6 @@ tokenize() {
                     break
                 fi
             done
-            # Disallow reserved words that might appear in expressions
             case "$name" in
                 var|let|const|if|else|while|for|function|return)
                     echo "Error: Unexpected keyword '$name' in expression" >&2
@@ -137,8 +140,6 @@ tokenize() {
             tokens+=("VAR:$name")
             continue
         fi
-       
-        # Operators and parentheses
         case "$c" in
             '+'|'-'|'*'|'/'|'%'|'('|')')
                 tokens+=("OP:$c")
@@ -150,13 +151,12 @@ tokenize() {
                 ;;
         esac
     done
-   
     printf '%s
 ' "${tokens[@]}"
 }
 
 # ----------------------------------------------------------------------
-# Shunting-yard algorithm - infix to postfix (RPN)
+# Shunting-yard algorithm
 # ----------------------------------------------------------------------
 precedence() {
     case "$1" in
@@ -170,11 +170,9 @@ to_rpn() {
     local tokens=("$@")
     local output=()
     local stack=()
-   
     for token in "${tokens[@]}"; do
         local type="${token%%:*}"
         local val="${token#*:}"
-       
         if [ "$type" = "INT" ] || [ "$type" = "FLOAT" ] || [ "$type" = "VAR" ]; then
             output+=("$token")
         elif [ "$type" = "OP" ]; then
@@ -205,12 +203,10 @@ to_rpn() {
             esac
         fi
     done
-   
     while [ ${#stack[@]} -gt 0 ]; do
         output+=("${stack[-1]}")
         unset 'stack[-1]'
     done
-   
     printf '%s
 ' "${output[@]}"
 }
@@ -238,60 +234,51 @@ is_float_expression() {
 }
 
 # ----------------------------------------------------------------------
-# Generate assembly code from RPN tokens (handles variables)
-# Mode can be "declare" (default) or "reassign".
-# In reassign mode, we do NOT generate the variable's storage definitions.
+# Generate assembly code from RPN tokens
 # ----------------------------------------------------------------------
 generate_full_asm() {
-    local mode="$1"   # "declare" or "reassign"
+    local mode="$1"
     local use_float=$2
     shift 2
     local rpn_tokens=("$@")
     local const_idx=0
     local DATA_SECTION=""
     local CODE_SECTION=""
-    
-    # Data section: only needed if we are declaring a new variable,
-    # or if we need float constants (even in reassign mode).
+    local uniq_suffix="$$"
+
     if [[ "$mode" == "declare" ]]; then
         DATA_SECTION+=$'    ; =========================================\n'
         DATA_SECTION+="    ; Variable: $VAR_NAME"$'\n'
         DATA_SECTION+="    ; Expression: $VAR_VALUE"$'\n'
+        DATA_SECTION+=$'    ; =========================================\n'
+        DATA_SECTION+="    ${VAR_NAME}_defined_flag db 1"$'\n'
         if [ "$use_float" = true ]; then
-            DATA_SECTION+=$'    ; Type: FLOAT (runtime evaluated)\n'
-            DATA_SECTION+=$'    ; =========================================\n'
-            for token in "${rpn_tokens[@]}"; do
-                if [[ "$token" == FLOAT:* ]]; then
-                    local val="${token#*:}"
-                    DATA_SECTION+="    ${VAR_NAME}_float${const_idx} dd ${val}"$'\n'
-                    DATA_SECTION+="    ${VAR_NAME}_float${const_idx}_type dq TYPE_FLOAT"$'\n'
-                    const_idx=$((const_idx+1))
-                fi
-            done
-            DATA_SECTION+="    ${VAR_NAME}_float_val dq 0    ; Storage for float result"$'\n'
-            DATA_SECTION+="    ${VAR_NAME}_str times 32 db 0    ; Per-variable string buffer"$'\n'
-            DATA_SECTION+="    ${VAR_NAME} dq ${VAR_NAME}_str    ; Pointer for printing"$'\n'
-            DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_FLOAT    ; RUNTIME TYPE TAG"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_float_val dq 0"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_str times 32 db 0"$'\n'
+            DATA_SECTION+="    ${VAR_NAME} dq ${VAR_NAME}_str"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_FLOAT"$'\n'
         else
-            DATA_SECTION+=$'    ; Type: INTEGER (runtime evaluated)\n'
-            DATA_SECTION+=$'    ; =========================================\n'
-            DATA_SECTION+="    ${VAR_NAME} dq 0    ; Storage for integer result"$'\n'
-            DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"$'\n'
-        fi
-    else
-        # Reassign mode: still need float constants if the expression involves floats.
-        if [ "$use_float" = true ]; then
-            for token in "${rpn_tokens[@]}"; do
-                if [[ "$token" == FLOAT:* ]]; then
-                    local val="${token#*:}"
-                    DATA_SECTION+="    ${VAR_NAME}_reassign_float${const_idx} dd ${val}"$'\n'
-                    const_idx=$((const_idx+1))
-                fi
-            done
+            DATA_SECTION+="    ${VAR_NAME} dq 0"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_float_val dq 0"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_str times 32 db 0"$'\n'
+            DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER"$'\n'
         fi
     fi
 
-    # Code section
+    if [ "$use_float" = true ]; then
+        for token in "${rpn_tokens[@]}"; do
+            if [[ "$token" == FLOAT:* ]]; then
+                local val="${token#*:}"
+                if [[ "$mode" == "declare" ]]; then
+                    DATA_SECTION+="    ${VAR_NAME}_float${const_idx} dd ${val}"$'\n'
+                else
+                    DATA_SECTION+="    ${VAR_NAME}_reassign_float${uniq_suffix}_${const_idx} dd ${val}"$'\n'
+                fi
+                const_idx=$((const_idx+1))
+            fi
+        done
+    fi
+
     CODE_SECTION+=$'    ; =========================================\n'
     CODE_SECTION+="    ; Runtime evaluation of: $VAR_VALUE"$'\n'
     CODE_SECTION+="    ; Variable: $VAR_NAME"$'\n'
@@ -307,7 +294,6 @@ generate_full_asm() {
     for token in "${rpn_tokens[@]}"; do
         local type="${token%%:*}"
         local val="${token#*:}"
-       
         if [ "$type" = "INT" ]; then
             if [ "$use_float" = true ]; then
                 CODE_SECTION+=$'    ; Push integer '"$val"' and convert to float
@@ -325,8 +311,8 @@ generate_full_asm() {
                 CODE_SECTION+="    ; Load float constant ${VAR_NAME}_float${const_idx}"$'\n'
                 CODE_SECTION+="    fld dword [${VAR_NAME}_float${const_idx}]"$'\n'
             else
-                CODE_SECTION+="    ; Load float constant ${VAR_NAME}_reassign_float${const_idx}"$'\n'
-                CODE_SECTION+="    fld dword [${VAR_NAME}_reassign_float${const_idx}]"$'\n'
+                CODE_SECTION+="    ; Load float constant ${VAR_NAME}_reassign_float${uniq_suffix}_${const_idx}"$'\n'
+                CODE_SECTION+="    fld dword [${VAR_NAME}_reassign_float${uniq_suffix}_${const_idx}]"$'\n'
             fi
             const_idx=$((const_idx+1))
         elif [ "$type" = "VAR" ]; then
@@ -439,7 +425,7 @@ generate_full_asm() {
             fi
         fi
     done
-   
+
     CODE_SECTION+=$'\n    ; Store result in variable with type tag
 '
     if [ "$use_float" = true ]; then
@@ -452,22 +438,23 @@ generate_full_asm() {
         CODE_SECTION+=$'    add rsp, 8
 '
         CODE_SECTION+="    movsd [${VAR_NAME}_float_val], xmm0"$'\n'
-        CODE_SECTION+="    mov rdi, ${VAR_NAME}_str    ; output buffer"$'\n'
+        CODE_SECTION+="    mov rdi, ${VAR_NAME}_str"$'\n'
         CODE_SECTION+="    movsd xmm0, [${VAR_NAME}_float_val]"$'\n'
         CODE_SECTION+=$'    call float_to_str
 '
-        CODE_SECTION+="    mov qword [${VAR_NAME}], ${VAR_NAME}_str    ; Store pointer to string"$'\n'
-        CODE_SECTION+="    mov qword [${VAR_NAME}_type], TYPE_FLOAT    ; Set runtime type tag"$'\n'
+        CODE_SECTION+="    mov qword [${VAR_NAME}], ${VAR_NAME}_str"$'\n'
+        CODE_SECTION+="    mov qword [${VAR_NAME}_type], TYPE_FLOAT"$'\n'
+        CODE_SECTION+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
     else
         CODE_SECTION+=$'    ; Store integer result
 '
         CODE_SECTION+=$'    pop rax
 '
         CODE_SECTION+="    mov [${VAR_NAME}], rax"$'\n'
-        CODE_SECTION+="    mov qword [${VAR_NAME}_type], TYPE_NUMBER    ; Set runtime type tag"$'\n'
+        CODE_SECTION+="    mov qword [${VAR_NAME}_type], TYPE_NUMBER"$'\n'
+        CODE_SECTION+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
     fi
 
-    # Output both sections separated by marker
     echo "$DATA_SECTION"
     echo "DATA_CODE_SEPARATOR"
     echo "$CODE_SECTION"
@@ -485,7 +472,7 @@ if [[ "$REASSIGNMENT" == "true" ]]; then
     MODE="reassign"
 fi
 
-# 1) Handle hex/binary/octal literals directly (they are always integer)
+# 1) Hex/binary/octal literal handling (always integer)
 if [[ "$VAR_VALUE" =~ ^-?0[xX][0-9a-fA-F]+$ ]] || \
    [[ "$VAR_VALUE" =~ ^-?0[bB][01]+$ ]] || \
    [[ "$VAR_VALUE" =~ ^-?0[0-7]+$ ]]; then
@@ -494,20 +481,20 @@ if [[ "$VAR_VALUE" =~ ^-?0[xX][0-9a-fA-F]+$ ]] || \
         DATA_SECTION+="    ; Variable: $VAR_NAME = $VAR_VALUE"$'\n'
         DATA_SECTION+="    ; Type: INTEGER (literal)"$'\n'
         DATA_SECTION+="    ; ========================================="$'\n'
+        DATA_SECTION+="    ${VAR_NAME}_defined_flag db 1"$'\n'
         DATA_SECTION+="    ${VAR_NAME} dq $VAR_VALUE"$'\n'
-        DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"
+        DATA_SECTION+="    ${VAR_NAME}_float_val dq 0"$'\n'
+        DATA_SECTION+="    ${VAR_NAME}_str times 32 db 0"$'\n'
+        DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER"$'\n'
     else
-        # Reassign mode: generate code to store the integer literal
         CODE_SECTION="    ; Reassign integer variable: $VAR_NAME = $VAR_VALUE"$'\n'
         CODE_SECTION+="    mov qword [$VAR_NAME], $VAR_VALUE"$'\n'
         CODE_SECTION+="    mov qword [${VAR_NAME}_type], TYPE_NUMBER"$'\n'
+        CODE_SECTION+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
     fi
-
-# 2) Tokenize and decide
 else
     mapfile -t tokens < <(tokenize "$VAR_VALUE")
 
-    # Single literal (int/float)
     if [ ${#tokens[@]} -eq 1 ]; then
         token="${tokens[0]}"
         ttype="${token%%:*}"
@@ -520,26 +507,36 @@ else
                 DATA_SECTION+="    ; Variable: $VAR_NAME = $tval"$'\n'
                 DATA_SECTION+="    ; Type: FLOAT (literal)"$'\n'
                 DATA_SECTION+="    ; ========================================="$'\n'
-                DATA_SECTION+="    ${VAR_NAME}_float_val dq 0    ; Storage for float value"$'\n'
-                DATA_SECTION+="    ${VAR_NAME}_float dd $FLOAT_VAL    ; The actual float constant"$'\n'
-                DATA_SECTION+="    ${VAR_NAME}_float_str db '$FLOAT_VAL', 0    ; String representation"$'\n'
-                DATA_SECTION+="    ${VAR_NAME} dq ${VAR_NAME}_float_str    ; Pointer for printing"$'\n'
-                DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_FLOAT    ; RUNTIME TYPE TAG"$'\n'
+                DATA_SECTION+="    ${VAR_NAME}_defined_flag db 1"$'\n'
+                DATA_SECTION+="    ${VAR_NAME}_float_val dq 0"$'\n'
+                DATA_SECTION+="    ${VAR_NAME}_str times 32 db 0"$'\n'
+                DATA_SECTION+="    ${VAR_NAME} dq ${VAR_NAME}_str"$'\n'
+                DATA_SECTION+="    ${VAR_NAME}_float dd $FLOAT_VAL"$'\n'
+                DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_FLOAT"$'\n'
                 CODE_SECTION="    ; Initialize float value at runtime"$'\n'
                 CODE_SECTION+="    fld dword [${VAR_NAME}_float]"$'\n'
-                CODE_SECTION+="    fstp qword [${VAR_NAME}_float_val]"
-            else
-                # Reassign mode: need a constant in data section and code to load/store
-                DATA_SECTION="    ; Temporary float constant for reassignment"$'\n'
-                DATA_SECTION+="    ${VAR_NAME}_reassign_float0 dd $FLOAT_VAL"$'\n'
-                CODE_SECTION="    ; Reassign float variable: $VAR_NAME = $tval"$'\n'
-                CODE_SECTION+="    fld dword [${VAR_NAME}_reassign_float0]"$'\n'
                 CODE_SECTION+="    fstp qword [${VAR_NAME}_float_val]"$'\n'
-                CODE_SECTION+="    mov rdi, ${VAR_NAME}_str    ; output buffer"$'\n'
+                CODE_SECTION+="    mov rdi, ${VAR_NAME}_str"$'\n'
                 CODE_SECTION+="    movsd xmm0, [${VAR_NAME}_float_val]"$'\n'
-                CODE_SECTION+="    call float_to_str"$'\n'
+                CODE_SECTION+=$'    call float_to_str
+'
                 CODE_SECTION+="    mov qword [${VAR_NAME}], ${VAR_NAME}_str"$'\n'
                 CODE_SECTION+="    mov qword [${VAR_NAME}_type], TYPE_FLOAT"$'\n'
+                CODE_SECTION+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
+            else
+                local uniq_suffix="$$"
+                DATA_SECTION="    ; Temporary float constant for reassignment"$'\n'
+                DATA_SECTION+="    ${VAR_NAME}_reassign_float${uniq_suffix}_0 dd $FLOAT_VAL"$'\n'
+                CODE_SECTION="    ; Reassign float variable: $VAR_NAME = $tval"$'\n'
+                CODE_SECTION+="    fld dword [${VAR_NAME}_reassign_float${uniq_suffix}_0]"$'\n'
+                CODE_SECTION+="    fstp qword [${VAR_NAME}_float_val]"$'\n'
+                CODE_SECTION+="    mov rdi, ${VAR_NAME}_str"$'\n'
+                CODE_SECTION+="    movsd xmm0, [${VAR_NAME}_float_val]"$'\n'
+                CODE_SECTION+=$'    call float_to_str
+'
+                CODE_SECTION+="    mov qword [${VAR_NAME}], ${VAR_NAME}_str"$'\n'
+                CODE_SECTION+="    mov qword [${VAR_NAME}_type], TYPE_FLOAT"$'\n'
+                CODE_SECTION+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
             fi
         elif [ "$ttype" = "INT" ]; then
             if [[ "$MODE" == "declare" ]]; then
@@ -547,16 +544,19 @@ else
                 DATA_SECTION+="    ; Variable: $VAR_NAME = $tval"$'\n'
                 DATA_SECTION+="    ; Type: INTEGER (literal)"$'\n'
                 DATA_SECTION+="    ; ========================================="$'\n'
+                DATA_SECTION+="    ${VAR_NAME}_defined_flag db 1"$'\n'
                 DATA_SECTION+="    ${VAR_NAME} dq $tval"$'\n'
-                DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER    ; RUNTIME TYPE TAG"
+                DATA_SECTION+="    ${VAR_NAME}_float_val dq 0"$'\n'
+                DATA_SECTION+="    ${VAR_NAME}_str times 32 db 0"$'\n'
+                DATA_SECTION+="    ${VAR_NAME}_type dq TYPE_NUMBER"$'\n'
             else
                 CODE_SECTION="    ; Reassign integer variable: $VAR_NAME = $tval"$'\n'
                 CODE_SECTION+="    mov qword [$VAR_NAME], $tval"$'\n'
                 CODE_SECTION+="    mov qword [${VAR_NAME}_type], TYPE_NUMBER"$'\n'
+                CODE_SECTION+="    mov byte [${VAR_NAME}_defined_flag], 1"$'\n'
             fi
         else
-            # Single variable – this case should be handled by var.sh (reference)
-            # but if it reaches here, treat as expression.
+            # Single variable reference (should not happen here, var.sh handles)
             mapfile -t rpn_tokens < <(to_rpn "${tokens[@]}")
             if is_float_expression "${tokens[@]}"; then
                 IS_FLOAT=true
@@ -570,7 +570,6 @@ else
         fi
     fi
 
-    # If not a simple literal, treat as expression
     if [ -z "$DATA_SECTION" ] && [ -z "$CODE_SECTION" ]; then
         mapfile -t rpn_tokens < <(to_rpn "${tokens[@]}")
         if is_float_expression "${tokens[@]}"; then
@@ -629,7 +628,6 @@ fi
 
 mv "$TEMP_FILE" "$OUTPUT_FILE"
 
-# Final status
 if [ "$IS_FLOAT" = true ]; then
     if [[ "$MODE" == "reassign" ]]; then
         echo "✓ Successfully reassigned float variable: $VAR_NAME = $VAR_VALUE"
