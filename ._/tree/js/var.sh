@@ -3,6 +3,9 @@
 # ============================================================
 # var.sh - Main handler that analyzes JavaScript var declarations
 # and delegates to specific type handlers.
+# ------------------------------------------------------------
+# NEW: Directly handles "var x = y" (variable reference copy)
+#      inside this script, without delegating to simple.sh.
 # ============================================================
 
 set -o nounset    # Treat unset variables as an error
@@ -444,8 +447,180 @@ is_complex_type() {
 }
 
 # ============================================================
+# NEW: Functions for direct variable-reference assignment
+#      (var x = y)
+# ============================================================
+
+# Path to the assembly output file (same relative depth as in simple.sh/number.sh)
+OUTPUT_FILE="../../build_output.asm"
+
+# Associative array to store types of already declared variables
+declare -A VAR_TYPES
+
+# ----------------------------------------------------------------------
+# load_existing_variable_types
+#   Reads build_output.asm and fills VAR_TYPES with variable name -> type
+# ----------------------------------------------------------------------
+load_existing_variable_types() {
+    VAR_TYPES=()
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)_type[[:space:]]+dq[[:space:]]+TYPE_([A-Z_]+) ]]; then
+            local var_name="${BASH_REMATCH[1]}"
+            local type_name="${BASH_REMATCH[2]}"
+            VAR_TYPES["$var_name"]="$type_name"
+        fi
+    done < <(grep -E '^\s*[a-zA-Z_][a-zA-Z0-9_]*_type\s+dq\s+TYPE_[A-Z_]+' "$OUTPUT_FILE" 2>/dev/null || true)
+}
+
+# ----------------------------------------------------------------------
+# insert_assembly_sections
+#   Inserts DATA_SECTION and CODE_SECTION into build_output.asm
+#   exactly like number.sh does.
+# ----------------------------------------------------------------------
+insert_assembly_sections() {
+    local data_section="$1"
+    local code_section="$2"
+    local temp_file=$(mktemp)
+    local in_data=0
+    local in_start=0
+    local data_done=0
+    local code_done=0
+
+    while IFS= read -r line; do
+        if [[ "$line" == "section .data" ]]; then
+            in_data=1
+        elif [[ "$line" == section* ]] && [ "$in_data" -eq 1 ]; then
+            if [ "$data_done" -eq 0 ] && [ -n "$data_section" ]; then
+                echo "$data_section" >> "$temp_file"
+                data_done=1
+            fi
+            in_data=0
+        fi
+
+        if [[ "$line" == "_start:" ]]; then
+            in_start=1
+        fi
+
+        if [ "$in_start" -eq 1 ] && [ "$code_done" -eq 0 ] && \
+           [[ "$line" =~ ^[[:space:]]*mov[[:space:]]+rax,[[:space:]]*60 ]] && \
+           [ -n "$code_section" ]; then
+            echo "$code_section" >> "$temp_file"
+            code_done=1
+        fi
+
+        echo "$line" >> "$temp_file"
+    done < "$OUTPUT_FILE"
+
+    if [ "$in_data" -eq 1 ] && [ "$data_done" -eq 0 ] && [ -n "$data_section" ]; then
+        echo "$data_section" >> "$temp_file"
+    fi
+
+    if [ "$code_done" -eq 0 ] && [ -n "$code_section" ]; then
+        echo "$code_section" >> "$temp_file"
+    fi
+
+    mv "$temp_file" "$OUTPUT_FILE"
+}
+
+# ----------------------------------------------------------------------
+# handle_variable_reference
+#   Called when VAR_VALUE is a single identifier (e.g. "othervariable").
+#   Generates assembly that copies the value and type from the source
+#   variable to the new variable at runtime.
+# ----------------------------------------------------------------------
+handle_variable_reference() {
+    local new_var="$1"
+    local source_var="$2"
+
+    load_existing_variable_types
+
+    if [ -z "${VAR_TYPES[$source_var]+x}" ]; then
+        echo "Error: Referenced variable '$source_var' not found or has unknown type"
+        exit 1
+    fi
+
+    local source_type="${VAR_TYPES[$source_var]}"
+    # Convert to lowercase for easier handling
+    source_type=$(echo "$source_type" | tr '[:upper:]' '[:lower:]')
+
+    local data_section=""
+    local code_section=""
+
+    case "$source_type" in
+        float)
+            data_section=$'    ; =========================================\n'
+            data_section+=$'    ; Variable: '"$new_var"$' (copy of '"$source_var"$')\n'
+            data_section+=$'    ; Type: FLOAT (copy)\n'
+            data_section+=$'    ; =========================================\n'
+            data_section+="    ${new_var} dq 0"$'\n'
+            data_section+="    ${new_var}_float_val dq 0"$'\n'
+            data_section+="    ${new_var}_type dq TYPE_FLOAT"$'\n'
+            code_section=$'    ; Copy float variable '"$source_var"$' to '"$new_var"$'\n'
+            code_section+="    mov rax, qword [${source_var}_float_val]"$'\n'
+            code_section+="    mov qword [${new_var}_float_val], rax"$'\n'
+            code_section+="    mov rax, qword [${source_var}]"$'\n'
+            code_section+="    mov qword [${new_var}], rax"$'\n'
+            code_section+="    mov rax, qword [${source_var}_type]"$'\n'
+            code_section+="    mov qword [${new_var}_type], rax"$'\n'
+            ;;
+        number|int|integer)
+            data_section=$'    ; =========================================\n'
+            data_section+=$'    ; Variable: '"$new_var"$' (copy of '"$source_var"$')\n'
+            data_section+=$'    ; Type: NUMBER (copy)\n'
+            data_section+=$'    ; =========================================\n'
+            data_section+="    ${new_var} dq 0"$'\n'
+            data_section+="    ${new_var}_type dq TYPE_NUMBER"$'\n'
+            code_section=$'    ; Copy integer variable '"$source_var"$' to '"$new_var"$'\n'
+            code_section+="    mov rax, qword [${source_var}]"$'\n'
+            code_section+="    mov qword [${new_var}], rax"$'\n'
+            code_section+="    mov rax, qword [${source_var}_type]"$'\n'
+            code_section+="    mov qword [${new_var}_type], rax"$'\n'
+            ;;
+        string|boolean|null|undefined)
+            local upper_type=$(echo "$source_type" | tr '[:lower:]' '[:upper:]')
+            data_section=$'    ; =========================================\n'
+            data_section+=$'    ; Variable: '"$new_var"$' (copy of '"$source_var"$')\n'
+            data_section+=$'    ; Type: '"$upper_type"$' (copy)\n'
+            data_section+=$'    ; =========================================\n'
+            data_section+="    ${new_var} dq 0"$'\n'
+            data_section+="    ${new_var}_type dq TYPE_${upper_type}"$'\n'
+            code_section=$'    ; Copy variable '"$source_var"$' to '"$new_var"$'\n'
+            code_section+="    mov rax, qword [${source_var}]"$'\n'
+            code_section+="    mov qword [${new_var}], rax"$'\n'
+            code_section+="    mov rax, qword [${source_var}_type]"$'\n'
+            code_section+="    mov qword [${new_var}_type], rax"$'\n'
+            ;;
+        *)
+            echo "Error: Unsupported source type '$source_type' for reference assignment"
+            exit 1
+            ;;
+    esac
+
+    insert_assembly_sections "$data_section" "$code_section"
+
+    echo "✓ Successfully copied variable $source_var to $new_var"
+    echo "  - Type: $source_type"
+    echo "  - Value copied at assembly runtime"
+}
+
+# ============================================================
 # Main type determination logic
 # ============================================================
+
+# ------------------------------------------------------------
+# NEW: Check for direct variable reference assignment
+#      e.g.  var teste = othervariable
+# ------------------------------------------------------------
+if [[ "$VAR_VALUE" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] && \
+   [[ "$VAR_VALUE" != "null" && "$VAR_VALUE" != "undefined" && \
+      "$VAR_VALUE" != "true" && "$VAR_VALUE" != "false" ]]; then
+    handle_variable_reference "$VAR_NAME" "$VAR_VALUE"
+    exit 0
+fi
+
+# ------------------------------------------------------------
+# Original type determination (unchanged)
+# ------------------------------------------------------------
 TYPE="unknown"
 
 if is_simple_type "$VAR_VALUE"; then
