@@ -4,6 +4,7 @@
 # Added execution time tracking with --silent option
 # Added support for .sh files in addition to .asm and binaries
 # Added --verbose mode to show full logs including nested executions
+# NEW: Detects bare assignments (variable = value) and treats them as reassignments
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,7 +65,7 @@ format_duration() {
     local ms=$1
     local seconds=$((ms / 1000))
     local milliseconds=$((ms % 1000))
-    
+   
     if (( seconds > 0 )); then
         echo "${seconds}.${milliseconds}s"
     else
@@ -87,7 +88,7 @@ get_tree_prefix() {
     local depth=$1
     local is_last=$2
     local prefix=""
-    
+   
     for ((i=0; i<depth-1; i++)); do
         if [[ "${EXECUTION_TREE[$i]}" == "last" ]]; then
             prefix+="    "
@@ -95,7 +96,7 @@ get_tree_prefix() {
             prefix+="│   "
         fi
     done
-    
+   
     if [[ $depth -gt 0 ]]; then
         if [[ "$is_last" == "true" ]]; then
             prefix+="└── "
@@ -103,7 +104,7 @@ get_tree_prefix() {
             prefix+="├── "
         fi
     fi
-    
+   
     echo "$prefix"
 }
 
@@ -150,10 +151,10 @@ log_execution_start() {
         local execution_type=$1
         local file_path=$2
         local tree_prefix=$(get_tree_prefix $EXECUTION_DEPTH "false")
-        
+       
         echo ""
         echo -e "${WHITE}${tree_prefix}▶ ${execution_type}: ${file_path}${NC}"
-        
+       
         if [[ $EXECUTION_DEPTH -gt 0 ]]; then
             local call_chain=""
             for ((i=0; i<${#EXECUTION_PATH[@]}; i++)); do
@@ -173,7 +174,7 @@ log_execution_end() {
         local status=$1
         local duration=$2
         local tree_prefix=$(get_tree_prefix $EXECUTION_DEPTH "false")
-        
+       
         if [[ $status -eq 0 ]]; then
             echo -e "${GREEN}${tree_prefix}✓ Completed: $(format_duration $duration)${NC}"
         else
@@ -190,7 +191,7 @@ log_file_content() {
         local content="$2"
         local total_lines=$(echo "$content" | wc -l)
         local tree_prefix=$(get_tree_prefix $EXECUTION_DEPTH "false")
-        
+       
         echo -e "${CYAN}${tree_prefix}  File: $file_path${NC}"
         echo -e "${CYAN}${tree_prefix}  Content:${NC}"
         echo "$content" | head -5 | while IFS= read -r line; do
@@ -209,7 +210,7 @@ log_truncated_output() {
     local max_lines="$3"
     local total_lines=$(echo "$output" | wc -l)
     local tree_prefix=$(get_tree_prefix $EXECUTION_DEPTH "false")
-    
+   
     if [[ $total_lines -le $max_lines ]]; then
         # Show all lines if within limit
         echo "$output" | while IFS= read -r line; do
@@ -233,10 +234,10 @@ log_truncated_output() {
 # Function to check if content is a declaration
 is_declaration() {
     local content="$1"
-    
+   
     # Trim leading whitespace
     local trimmed="${content#"${content%%[![:space:]]*}"}"
-    
+   
     # Check for declaration keywords with space after
     if [[ "$trimmed" =~ ^(let\ |const\ |var\ ) ]]; then
         echo "${BASH_REMATCH[1]% }"  # Return the keyword without the space
@@ -245,16 +246,29 @@ is_declaration() {
     fi
 }
 
+# Function to check if content is a bare assignment (variable = value)
+is_assignment() {
+    local content="$1"
+    # Trim leading whitespace
+    local trimmed="${content#"${content%%[![:space:]]*}"}"
+    # Match identifier = (with optional spaces around =)
+    if [[ "$trimmed" =~ ^[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*= ]]; then
+        echo "true"
+    else
+        echo "false"
+    fi
+}
+
 # Function to parse method name from expression
 parse_method_name() {
     local content="$1"
-    
+   
     # Remove whitespace
     local trimmed="${content//[[:space:]]/}"
-    
+   
     # Extract everything before first '('
     local method_part="${trimmed%%(*}"
-    
+   
     echo "$method_part"
 }
 
@@ -262,7 +276,7 @@ parse_method_name() {
 # Returns: "binary", "asm", "sh", or ""
 check_executable_exists() {
     local base_path="$1"
-    
+   
     # Check for binary (without extension) - HIGHEST PRIORITY
     if [[ -f "$base_path" ]] && [[ -x "$base_path" || -x "${base_path%.*}" ]]; then
         echo "binary"
@@ -286,23 +300,23 @@ create_temp_file() {
     local file_path="$1"
     local content="$2"
     local creation_start_time=0
-    
+   
     # Create directory if it doesn't exist
     mkdir -p "$(dirname "$file_path")"
-    
+   
     # Start creation time tracking
     creation_start_time=$(get_timestamp_ms)
-    
+   
     # Write content to file
     echo -n "$content" > "$file_path"
-    
+   
     local result=$?
     local creation_end_time=$(get_timestamp_ms)
     local creation_duration=$((creation_end_time - creation_start_time))
-    
+   
     # Track total creation time
     TOTAL_CREATION_TIME=$((TOTAL_CREATION_TIME + creation_duration))
-    
+   
     if [[ $result -eq 0 ]]; then
         if [[ "$SILENT_MODE" == false ]]; then
             log_info "Created file: $file_path ($(format_duration $creation_duration))"
@@ -322,33 +336,33 @@ execute_basm() {
     local asm_file="$2"
     local execution_start_time=0
     local output_file="${asm_file%.asm}_output.txt"
-    
+   
     # Mark if this is the last in current level
     EXECUTION_TREE+=("false")
-    
+   
     # Push to execution path
     EXECUTION_PATH+=("$(basename "$asm_file")")
     EXECUTION_DEPTH=$((EXECUTION_DEPTH + 1))
-    
+   
     log_execution_start "BASM" "$asm_file"
-    
+   
     if [[ "$SILENT_MODE" == false ]]; then
         log_info "Executing: bash $BASH_RUNNER $asm_file"
     fi
-    
+   
     # Record execution start time
     execution_start_time=$(get_timestamp_ms)
-    
+   
     # Execute with appropriate output redirection based on mode
     local exit_code=0
-    
+   
     if [[ "$VERBOSE_MODE" == true ]]; then
         log_debug "Running basm with truncated verbose output capture..."
-        
+       
         # Capture all output to file and display truncated version
         bash "$BASH_RUNNER" "$asm_file" > "$output_file" 2>&1
         exit_code=$?
-        
+       
         # Show truncated output in verbose mode
         if [[ -f "$output_file" ]]; then
             local captured_output=$(cat "$output_file")
@@ -365,18 +379,18 @@ execute_basm() {
             exit_code=$?
         fi
     fi
-    
+   
     local execution_end_time=$(get_timestamp_ms)
     local execution_duration=$((execution_end_time - execution_start_time))
     TOTAL_EXECUTION_TIME=$((TOTAL_EXECUTION_TIME + execution_duration))
-    
+   
     log_execution_end $exit_code $execution_duration
-    
+   
     # Pop from execution path
     EXECUTION_DEPTH=$((EXECUTION_DEPTH - 1))
     unset 'EXECUTION_PATH[-1]'
     unset 'EXECUTION_TREE[-1]'
-    
+   
     if [[ $exit_code -eq 0 ]]; then
         if [[ "$SILENT_MODE" == false ]]; then
             log_info "Execution completed successfully ($(format_duration $execution_duration))"
@@ -396,36 +410,36 @@ execute_binary() {
     local binary_file="$2"
     local execution_start_time=0
     local output_file="${binary_file}_output.txt"
-    
+   
     # Make sure binary is executable
     chmod +x "$binary_file" 2>/dev/null || true
-    
+   
     # Mark if this is the last in current level
     EXECUTION_TREE+=("false")
-    
+   
     # Push to execution path
     EXECUTION_PATH+=("$(basename "$binary_file")")
     EXECUTION_DEPTH=$((EXECUTION_DEPTH + 1))
-    
+   
     log_execution_start "BINARY" "$binary_file"
-    
+   
     if [[ "$SILENT_MODE" == false ]]; then
         log_info "Executing binary directly: $binary_file"
     fi
-    
+   
     # Record execution start time
     execution_start_time=$(get_timestamp_ms)
-    
+   
     # Execute with appropriate output redirection based on mode
     local exit_code=0
-    
+   
     if [[ "$VERBOSE_MODE" == true ]]; then
         log_debug "Running binary with truncated verbose output capture..."
-        
+       
         # Capture all output to file and display truncated version
         "$binary_file" > "$output_file" 2>&1
         exit_code=$?
-        
+       
         # Show truncated output in verbose mode
         if [[ -f "$output_file" ]]; then
             local captured_output=$(cat "$output_file")
@@ -442,18 +456,18 @@ execute_binary() {
             exit_code=$?
         fi
     fi
-    
+   
     local execution_end_time=$(get_timestamp_ms)
     local execution_duration=$((execution_end_time - execution_start_time))
     TOTAL_EXECUTION_TIME=$((TOTAL_EXECUTION_TIME + execution_duration))
-    
+   
     log_execution_end $exit_code $execution_duration
-    
+   
     # Pop from execution path
     EXECUTION_DEPTH=$((EXECUTION_DEPTH - 1))
     unset 'EXECUTION_PATH[-1]'
     unset 'EXECUTION_TREE[-1]'
-    
+   
     if [[ $exit_code -eq 0 ]]; then
         if [[ "$SILENT_MODE" == false ]]; then
             log_info "Binary execution completed successfully ($(format_duration $execution_duration))"
@@ -473,32 +487,32 @@ execute_sh() {
     local sh_file="$2"
     local execution_start_time=0
     local output_file="${sh_file%.sh}_output.txt"
-    
+   
     # Make sure shell script is executable
     chmod +x "$sh_file" 2>/dev/null || true
-    
+   
     # Mark if this is the last in current level
     EXECUTION_TREE+=("false")
-    
+   
     # Push to execution path
     EXECUTION_PATH+=("$(basename "$sh_file")")
     EXECUTION_DEPTH=$((EXECUTION_DEPTH + 1))
-    
+   
     log_execution_start "SHELL" "$sh_file"
-    
+   
     if [[ "$SILENT_MODE" == false ]]; then
         log_info "Executing shell script: bash $sh_file"
     fi
-    
+   
     # Record execution start time
     execution_start_time=$(get_timestamp_ms)
-    
+   
     # Execute with appropriate output redirection based on mode
     local exit_code=0
-    
+   
     if [[ "$VERBOSE_MODE" == true ]]; then
         log_debug "Running shell script with truncated verbose output capture..."
-        
+       
         # Show script content in verbose mode (truncated)
         if [[ -f "$sh_file" ]]; then
             local script_content=$(cat "$sh_file")
@@ -512,11 +526,11 @@ execute_sh() {
                 echo -e "${PURPLE}${tree_prefix}  │ ... ($((script_total_lines - 10)) more lines)${NC}"
             fi
         fi
-        
+       
         # Capture all output to file and display truncated version
         bash "$sh_file" > "$output_file" 2>&1
         exit_code=$?
-        
+       
         # Show truncated output in verbose mode
         if [[ -f "$output_file" ]]; then
             local captured_output=$(cat "$output_file")
@@ -533,18 +547,18 @@ execute_sh() {
             exit_code=$?
         fi
     fi
-    
+   
     local execution_end_time=$(get_timestamp_ms)
     local execution_duration=$((execution_end_time - execution_start_time))
     TOTAL_EXECUTION_TIME=$((TOTAL_EXECUTION_TIME + execution_duration))
-    
+   
     log_execution_end $exit_code $execution_duration
-    
+   
     # Pop from execution path
     EXECUTION_DEPTH=$((EXECUTION_DEPTH - 1))
     unset 'EXECUTION_PATH[-1]'
     unset 'EXECUTION_TREE[-1]'
-    
+   
     if [[ $exit_code -eq 0 ]]; then
         if [[ "$SILENT_MODE" == false ]]; then
             log_info "Shell script execution completed successfully ($(format_duration $execution_duration))"
@@ -561,36 +575,85 @@ execute_sh() {
 # Function to handle JavaScript-like content with support for .sh files
 handle_js_content() {
     local content="$1"
-    
+   
     if [[ "$SILENT_MODE" == false ]]; then
         log_info "Processing JS content: ${content:0:50}..."
     fi
-    
+   
     log_verbose "Processing JS content (length: ${#content} chars)"
     log_debug "Content preview: ${content:0:100}..."
-    
-    # Step 1: Check for declarations
+   
+    # --- NEW: Detect bare assignment (variable = value) ---
+    local trimmed_content=$(echo "$content" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ "$(is_assignment "$trimmed_content")" == "true" ]]; then
+        log_info "Detected bare assignment (reassignment) - treating as var declaration"
+        # Set reassignment flag for child scripts
+        export REASSIGNMENT=true
+        # Force declaration type to 'var' to reuse the same handler
+        declaration_type="var"
+        # Create input file with the same content (no modification needed)
+        local input_file="${JS_DIR}${declaration_type}_input"
+        local base_file="${JS_DIR}${declaration_type}"
+        if create_temp_file "$input_file" "$content"; then
+            local file_type
+            file_type=$(check_executable_exists "$base_file")
+            log_verbose "Executable type found: $file_type"
+            case "$file_type" in
+                "binary")
+                    if execute_binary "$input_file" "$base_file"; then
+                        processed_count=$((processed_count + 1))
+                    else
+                        error_count=$((error_count + 1))
+                    fi
+                    ;;
+                "asm")
+                    if execute_basm "$input_file" "${base_file}.asm"; then
+                        processed_count=$((processed_count + 1))
+                    else
+                        error_count=$((error_count + 1))
+                    fi
+                    ;;
+                "sh")
+                    if execute_sh "$input_file" "${base_file}.sh"; then
+                        processed_count=$((processed_count + 1))
+                    else
+                        error_count=$((error_count + 1))
+                    fi
+                    ;;
+                *)
+                    log_error "No executable found for assignment (checked: $base_file, ${base_file}.asm, ${base_file}.sh)"
+                    error_count=$((error_count + 1))
+                    ;;
+            esac
+        else
+            error_count=$((error_count + 1))
+        fi
+        unset REASSIGNMENT
+        return
+    fi
+   
+    # Step 1: Check for declarations (var/let/const)
     local declaration_type
     declaration_type=$(is_declaration "$content")
-    
+   
     if [[ -n "$declaration_type" ]]; then
         # Declaration detected
         if [[ "$SILENT_MODE" == false ]]; then
             log_info "Processing declaration: $declaration_type"
         fi
-        
+       
         log_verbose "Detected declaration type: $declaration_type"
-        
+       
         # Create declaration file with _input suffix
         local input_file="${JS_DIR}${declaration_type}_input"
         local base_file="${JS_DIR}${declaration_type}"
-        
+       
         if create_temp_file "$input_file" "$content"; then
             local file_type
             file_type=$(check_executable_exists "$base_file")
-            
+           
             log_verbose "Executable type found: $file_type"
-            
+           
             case "$file_type" in
                 "binary")
                     # Execute binary directly
@@ -626,22 +689,22 @@ handle_js_content() {
         fi
         return
     fi
-    
+   
     # Step 2: Try to parse as method call
     local method_name
     method_name=$(parse_method_name "$content")
-    
+   
     if [[ -n "$method_name" ]]; then
         log_verbose "Parsed method name: $method_name"
-        
+       
         # Handle dot notation
         local parts
         IFS='.' read -ra parts <<< "$method_name"
-        
+       
         # Build directory path
         local dir_path="$JS_DIR"
         local file_name=""
-        
+       
         if [[ ${#parts[@]} -eq 1 ]]; then
             # No dots: mymethod()
             dir_path+="${parts[0]}/"
@@ -653,22 +716,22 @@ handle_js_content() {
             done
             file_name="${parts[-1]}"
         fi
-        
+       
         log_verbose "Resolved path: $dir_path, file: $file_name"
-        
+       
         # Create input file with _input suffix
         local input_file="${dir_path}${file_name}_input"
         local base_file="${dir_path}${file_name}"
-        
+       
         if [[ "$SILENT_MODE" == false ]]; then
             log_info "Checking for executable: $base_file (binary, .asm, or .sh)"
         fi
-        
+       
         local file_type
         file_type=$(check_executable_exists "$base_file")
-        
+       
         log_verbose "Found executable type: $file_type"
-        
+       
         if [[ -n "$file_type" ]]; then
             if create_temp_file "$input_file" "$content"; then
                 case "$file_type" in
@@ -701,24 +764,24 @@ handle_js_content() {
             fi
         fi
     fi
-    
+   
     # Step 3: Fallback
     if [[ "$SILENT_MODE" == false ]]; then
         log_warn "No specific handler found, using fallback"
     fi
-    
+   
     log_verbose "Using fallback handler for content"
-    
+   
     # Create fallback input file with _input suffix
     local input_file="${JS_DIR}call_input"
     local base_file="${JS_DIR}call"
-    
+   
     if create_temp_file "$input_file" "$content"; then
         local file_type
         file_type=$(check_executable_exists "$base_file")
-        
+       
         log_verbose "Fallback executable type: $file_type"
-        
+       
         case "$file_type" in
             "binary")
                 if execute_binary "$input_file" "$base_file"; then
@@ -754,24 +817,24 @@ handle_js_content() {
 # Function to handle chain blocks with .sh support
 handle_chain_block() {
     local content="$1"
-    
+   
     if [[ "$SILENT_MODE" == false ]]; then
         log_info "Processing chain block (length: ${#content})"
     fi
-    
+   
     log_verbose "Processing chain block (length: ${#content} chars)"
     log_debug "Chain block preview: ${content:0:100}..."
-    
+   
     # Create chain input file with _input suffix
     local input_file="${CHAIN_DIR}chain_input"
     local base_file="${CHAIN_DIR}chain"
-    
+   
     if create_temp_file "$input_file" "$content"; then
         local file_type
         file_type=$(check_executable_exists "$base_file")
-        
+       
         log_verbose "Chain executable type: $file_type"
-        
+       
         case "$file_type" in
             "binary")
                 if execute_binary "$input_file" "$base_file"; then
@@ -808,13 +871,13 @@ handle_chain_block() {
 process_buffered_content() {
     local content="$CURRENT_CONTENT"
     local tag="$CURRENT_TAG"
-    
+   
     # Trim whitespace
     content=$(echo "$content" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-    
+   
     if [[ -n "$content" ]]; then
         log_verbose "Processing buffered content for tag: $tag (length: ${#content})"
-        
+       
         case "$tag" in
             "<js-start>")
                 handle_js_content "$content"
@@ -824,7 +887,7 @@ process_buffered_content() {
                 ;;
         esac
     fi
-    
+   
     # Reset buffer
     CURRENT_CONTENT=""
     CURRENT_TAG=""
@@ -834,10 +897,10 @@ process_buffered_content() {
 main() {
     # Record start time
     START_TIME=$(get_timestamp_ms)
-    
+   
     # Change to script directory to ensure consistent relative paths
     cd "$SCRIPT_DIR"
-    
+   
     if [[ "$SILENT_MODE" == false ]]; then
         if [[ "$VERBOSE_MODE" == true ]]; then
             echo -e "${WHITE}╔══════════════════════════════════════════╗${NC}"
@@ -851,50 +914,50 @@ main() {
             log_debug "Max verbose output lines per execution: $MAX_VERBOSE_OUTPUT_LINES"
             echo ""
         fi
-        
+       
         log_info "Starting build process..."
         log_info "Working directory: $SCRIPT_DIR"
         log_info "Reading from: $ARCH_OUTPUT"
     fi
-    
+   
     # Check if input file exists
     if [[ ! -f "$ARCH_OUTPUT" ]]; then
         log_error "Input file not found: $ARCH_OUTPUT"
         exit 1
     fi
-    
+   
     # Check if basm runner exists (as a file, not necessarily executable)
     if [[ ! -f "$BASH_RUNNER" ]]; then
         log_error "BASH runner not found: $BASH_RUNNER"
         exit 1
     fi
-    
+   
     # Create necessary directories
     mkdir -p "$JS_DIR"
     mkdir -p "$CHAIN_DIR"
-    
+   
     # Read the file line by line (much faster than reading entire file at once)
     local line
     local in_tag=0
     local chain_depth=0
     local chain_buffer=""
     local in_chain=0
-    
+   
     log_verbose "Starting to parse $ARCH_OUTPUT"
-    
+   
     while IFS= read -r line; do
         log_debug "Processing line: ${line:0:50}..."
-        
+       
         # If we're inside a chain block, buffer everything
         if [[ $in_chain -eq 1 ]]; then
             chain_buffer+="$line"$'\n'
-            
+           
             # Check for chain tags in this line
             if [[ "$line" == *"<chain-start>"* ]]; then
                 ((chain_depth++))
                 log_debug "Nested chain-start detected, depth: $chain_depth"
             fi
-            
+           
             if [[ "$line" == *"<chain-end>"* ]]; then
                 ((chain_depth--))
                 log_debug "Chain-end detected, remaining depth: $chain_depth"
@@ -908,7 +971,7 @@ main() {
             fi
             continue
         fi
-        
+       
         # Check for chain-start tags (special handling for nested chains)
         if [[ "$line" == *"<chain-start>"* ]]; then
             if [[ $in_tag -eq 0 ]]; then
@@ -920,7 +983,7 @@ main() {
                 continue
             fi
         fi
-        
+       
         # Process regular tags with state machine
         if [[ $in_tag -eq 0 ]]; then
             # Looking for opening tags
@@ -932,7 +995,7 @@ main() {
                 log_debug "js-start tag found"
             fi
         fi
-        
+       
         if [[ $in_tag -eq 1 ]]; then
             # Inside a tag, look for closing tag
             if [[ "$line" == *"<js-end>"* ]]; then
@@ -940,7 +1003,7 @@ main() {
                 CURRENT_CONTENT+="${line%<js-end>*}"
                 log_debug "js-end tag found, processing buffered content"
                 process_buffered_content
-                
+               
                 # Continue with remaining part of line after closing tag
                 remaining="${line#*<js-end>}"
                 if [[ -n "$remaining" ]]; then
@@ -970,23 +1033,23 @@ main() {
             fi
         fi
     done < "$ARCH_OUTPUT"
-    
+   
     # Handle any remaining buffered content
     if [[ -n "$CURRENT_CONTENT" && -n "$CURRENT_TAG" ]]; then
         log_verbose "Processing remaining buffered content"
         process_buffered_content
     fi
-    
+   
     # Handle any incomplete chain block
     if [[ $in_chain -eq 1 ]]; then
         log_error "Unclosed chain block detected"
         error_count=$((error_count + 1))
     fi
-    
+   
     # Calculate total execution time
     local END_TIME=$(get_timestamp_ms)
     local TOTAL_DURATION=$((END_TIME - START_TIME))
-    
+   
     # Print summary with execution time
     echo ""
     echo -e "${BLUE}========================================${NC}"
@@ -996,14 +1059,14 @@ main() {
     echo -e "${GREEN}[INFO]${NC} Script execution time: $(format_duration $TOTAL_EXECUTION_TIME)"
     echo -e "${GREEN}[INFO]${NC} Successfully processed: $processed_count"
     echo -e "${GREEN}[INFO]${NC} Errors encountered: $error_count"
-    
+   
     if [[ "$VERBOSE_MODE" == true ]]; then
         echo -e "${GREEN}[INFO]${NC} Verbose mode was enabled"
         echo -e "${GREEN}[INFO]${NC} Max execution depth reached: $EXECUTION_DEPTH"
     fi
-    
+   
     echo -e "${BLUE}========================================${NC}"
-    
+   
     if [[ $error_count -gt 0 ]]; then
         exit 1
     else

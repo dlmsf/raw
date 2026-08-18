@@ -37,7 +37,7 @@ strip_colors() {
     sed 's/\x1b\[[0-9;]*m//g' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'
 }
 
-# Function to normalize decimal numbers - improved precision matching
+# Function to normalize decimal numbers with smart matching
 normalize_decimals() {
     # Process each line independently to avoid cross-line contamination
     while IFS= read -r line; do
@@ -61,19 +61,13 @@ normalize_decimals() {
                 # Get the matched number
                 num = substr(remainder, RSTART, RLENGTH)
                 
-                # Normalize the number: round to 4 decimal places
+                # Normalize the number with smart decimal handling
                 if (num ~ /\./) {
                     # Handle scientific notation
                     if (num ~ /[eE]/) {
-                        normalized = sprintf("%.4f", num)
+                        normalized = normalize_decimal(num)
                     } else {
-                        # Round to 4 decimal places
-                        normalized = sprintf("%.4f", num + 0.0)
-                    }
-                    # Remove trailing zeros after decimal point, but keep at least one
-                    sub(/\.?0+$/, "", normalized)
-                    if (normalized !~ /\./) {
-                        normalized = normalized ".0"
+                        normalized = normalize_decimal(num)
                     }
                 } else {
                     normalized = num
@@ -86,7 +80,36 @@ normalize_decimals() {
             # Add any remaining part
             result = result remainder
             print result
-        }'
+        }
+        
+        function normalize_decimal(num_str) {
+            # Convert to a number for comparison
+            num_val = num_str + 0.0
+            
+            # For large numbers (absolute value > 1000), reduce precision
+            if (num_val > 1000 || num_val < -1000) {
+                # Use 1 decimal place for large numbers
+                normalized = sprintf("%.1f", num_val)
+            } else if (num_val > 100 || num_val < -100) {
+                # Use 2 decimal places for medium numbers
+                normalized = sprintf("%.2f", num_val)
+            } else if (num_val > 10 || num_val < -10) {
+                # Use 3 decimal places for small-medium numbers
+                normalized = sprintf("%.3f", num_val)
+            } else {
+                # Use 4 decimal places for small numbers
+                normalized = sprintf("%.4f", num_val)
+            }
+            
+            # Remove trailing zeros after decimal point, but keep at least one
+            sub(/\.?0+$/, "", normalized)
+            if (normalized !~ /\./) {
+                normalized = normalized ".0"
+            }
+            
+            return normalized
+        }
+        '
     done
 }
 

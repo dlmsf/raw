@@ -25,6 +25,18 @@ ERROR_LOG="${CALLER_DIR}/errorlog.txt"
 ERROR_MODE=false
 ERROR_FULL_MODE=false
 
+# Function to strip ANSI escape sequences from output
+strip_ansi_codes() {
+    local input="$1"
+    
+    # Use sed with simpler patterns that work on both GNU and BusyBox sed
+    # First pattern: Remove standard ANSI color codes (ESC[ ... m)
+    # Second pattern: Remove other ANSI escape sequences (ESC[ ... K, etc.)
+    # Third pattern: Remove ESC] (OSC) sequences
+    # Fourth pattern: Remove remaining ESC sequences
+    echo "$input" | sed -E 's/\x1b\[[0-9;]*[mK]//g; s/\x1b\][^\x07\x1b]*(\x07|\x1b\\)//g; s/\x1b[()][AB012]//g; s/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b[^a-zA-Z]*[a-zA-Z]//g'
+}
+
 # ============================================
 # HELP FUNCTION
 # ============================================
@@ -320,6 +332,9 @@ capture_asm_output() {
         asm_output=$(bash "$RAW_SCRIPT" --asm "$test_path" 2>&1 || true)
         asm_exit=$?
         
+        # Strip ANSI codes from ASM output
+        asm_output=$(strip_ansi_codes "$asm_output")
+        
         # Look for the build_output.asm file that was mentioned in the output
         local asm_file=""
         
@@ -372,6 +387,9 @@ rerun_verbose_on_error() {
     if [[ "$ERROR_MODE" == true ]]; then
         echo -e "${YELLOW}${BOLD}Error detected - Running with --verbose mode...${RESET}"
         
+        # Strip ANSI codes from diff output
+        diff_output=$(strip_ansi_codes "$diff_output")
+        
         # Run the test again with --verbose mode using Raw.sh
         local verbose_output=""
         local verbose_exit=1
@@ -379,6 +397,9 @@ rerun_verbose_on_error() {
         if [[ -n "$RAW_SCRIPT" ]] && [[ -f "$RAW_SCRIPT" ]]; then
             verbose_output=$(bash "$RAW_SCRIPT" --verbose "$test_path" 2>&1 || true)
             verbose_exit=$?
+            
+            # Strip ANSI codes from verbose output
+            verbose_output=$(strip_ansi_codes "$verbose_output")
         else
             verbose_output="Raw.sh not found at ${RAW_SCRIPT:-unknown location}"
         fi
