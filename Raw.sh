@@ -1149,7 +1149,7 @@ generate_binary() {
 # Creates an interactive CLI where each line is treated as JS code
 handle_cli() {
     clear
-    echo -e "${GREEN}rawjs${NC} ${YELLOW}· exit | clear | errorgen${NC}"
+    echo -e "${GREEN}RawJS${NC} ${YELLOW}· exit | clear | errorgen${NC}"
     echo ""
 
     local cli_js_file="$CALLER_DIR/.rawjs_cli.js"
@@ -1182,7 +1182,7 @@ handle_cli() {
             full_transcript=""
             previous_output=""
             clear
-            echo -e "${GREEN}rawjs${NC} ${YELLOW}· exit | clear | errorgen${NC}"
+            echo -e "${GREEN}RawJS${NC} ${YELLOW}· exit | clear | errorgen${NC}"
             echo ""
             continue
         fi

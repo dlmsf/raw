@@ -81,12 +81,79 @@ tokenize() {
     local tokens=()
     local i=0
     local len=${#expr}
+    local prev_type="START"  # Track previous token type for unary minus detection
+    
     while [ $i -lt $len ]; do
         local c="${expr:$i:1}"
         if [[ "$c" =~ [[:space:]] ]]; then
             i=$((i+1))
             continue
         fi
+        
+        # Handle minus sign (could be unary or binary)
+        if [[ "$c" == "-" ]]; then
+            # Check if this is a unary minus (start of expression, after operator, or after open paren)
+            if [ "$prev_type" = "START" ] || [ "$prev_type" = "OP" ] || [ "$prev_type" = "LPAREN" ]; then
+                # This is a unary minus - check if it's followed by a number or parenthesis
+                i=$((i+1))
+                if [ $i -lt $len ]; then
+                    local nc="${expr:$i:1}"
+                    if [[ "$nc" =~ [0-9] ]] || [[ "$nc" == "." ]]; then
+                        # Parse negative number
+                        local num="-$nc"
+                        i=$((i+1))
+                        local has_dot=false
+                        [[ "$nc" == "." ]] && has_dot=true
+                        
+                        while [ $i -lt $len ]; do
+                            local digit="${expr:$i:1}"
+                            if [[ "$digit" =~ [0-9] ]]; then
+                                num="${num}${digit}"
+                                i=$((i+1))
+                            elif [[ "$digit" == "." ]] && [ "$has_dot" = false ]; then
+                                num="${num}${digit}"
+                                has_dot=true
+                                i=$((i+1))
+                            elif [[ "$digit" =~ [eE] ]]; then
+                                num="${num}${digit}"
+                                i=$((i+1))
+                                if [ $i -lt $len ]; then
+                                    local sign="${expr:$i:1}"
+                                    if [[ "$sign" =~ [\+\-] ]]; then
+                                        num="${num}${sign}"
+                                        i=$((i+1))
+                                    fi
+                                fi
+                            else
+                                break
+                            fi
+                        done
+                        
+                        if [[ "$num" =~ \. ]] || [[ "$num" =~ [eE] ]]; then
+                            tokens+=("FLOAT:$num")
+                        else
+                            tokens+=("INT:$num")
+                        fi
+                        prev_type="NUM"
+                        continue
+                    elif [[ "$nc" == "(" ]]; then
+                        # Unary minus before parenthesis: -(expr)
+                        # We'll handle this as: 0 - (expr)
+                        tokens+=("INT:0")
+                        tokens+=("OP:-")
+                        prev_type="OP"
+                        # Don't consume the '(' here, let it be processed in the next iteration
+                        continue
+                    fi
+                fi
+            fi
+            # Binary subtraction
+            tokens+=("OP:-")
+            prev_type="OP"
+            i=$((i+1))
+            continue
+        fi
+        
         if [[ "$c" =~ [0-9] ]] || [[ "$c" == "." ]]; then
             local num="$c"
             i=$((i+1))
@@ -120,6 +187,7 @@ tokenize() {
             else
                 tokens+=("INT:$num")
             fi
+            prev_type="NUM"
             continue
         fi
         if [[ "$c" =~ [a-zA-Z_] ]]; then
@@ -141,11 +209,23 @@ tokenize() {
                     ;;
             esac
             tokens+=("VAR:$name")
+            prev_type="VAR"
             continue
         fi
         case "$c" in
-            '+'|'-'|'*'|'/'|'%'|'('|')')
+            '+'|'*'|'/'|'%')
                 tokens+=("OP:$c")
+                prev_type="OP"
+                i=$((i+1))
+                ;;
+            '(')
+                tokens+=("OP:(")
+                prev_type="LPAREN"
+                i=$((i+1))
+                ;;
+            ')')
+                tokens+=("OP:)")
+                prev_type="RPAREN"
                 i=$((i+1))
                 ;;
             *)
@@ -154,9 +234,9 @@ tokenize() {
                 ;;
         esac
     done
-    printf '%s
-' "${tokens[@]}"
+    printf '%s\n' "${tokens[@]}"
 }
+
 
 # ----------------------------------------------------------------------
 # Shunting-yard algorithm

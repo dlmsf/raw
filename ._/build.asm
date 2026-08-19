@@ -87,22 +87,23 @@ section .data
              db "    mov rsi, rbx", 10
              db "    dec rsi", 10
              db "    mov rcx, 10", 10
+             db "    mov rdi, rsi", 10           ; Save end position
              db "    cmp rax, 0", 10
              db "    jge .convert", 10
              db "    neg rax", 10
-             db "    push rax", 10
-             db "    mov byte [rsi], '-'", 10
-             db "    pop rax", 10
-             db "    jmp .convert", 10
              db ".convert:", 10
              db "    xor rdx, rdx", 10
              db "    div rcx", 10
              db "    add dl, '0'", 10
-             db "    dec rsi", 10
-             db "    mov [rsi+1], dl", 10
+             db "    mov [rsi], dl", 10         ; Store digit at current position
+             db "    dec rsi", 10               ; Move to next position
              db "    cmp rax, 0", 10
              db "    jne .convert", 10
-             db "    inc rsi", 10
+             db "    inc rsi", 10               ; Move back to first digit
+             db "    cmp qword [temp_number], 0", 10  ; Check if original was negative
+             db "    jge .print", 10
+             db "    dec rsi", 10               ; Make room for minus sign
+             db "    mov byte [rsi], '-'", 10   ; Store minus sign at beginning
              db ".print:", 10
              db "    mov rdi, rsi", 10
              db "    mov rsi, rdi", 10
