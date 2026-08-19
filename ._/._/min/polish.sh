@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Polish.sh - Polish JavaScript file
+# Polish.sh - Polish JavaScript file (console.log, functions, const, let)
 
 # ============================================
 # SAVE CALLER'S DIRECTORY AND RESOLVE JS FILE
@@ -38,17 +38,32 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ============================================
-# POLISH FLOW - Execute scripts directly
+# POLISH FLOW - Execute scripts as a pipeline
+# Order matters: consolelog first, then functions,
+# then const, then let (so const transformation
+# can process consts created by consolelog)
 # ============================================
+OUTPUT_FILE="output.js"
+TEMP1="${JS_FILE}.tmp1"
+TEMP2="${JS_FILE}.tmp2"
+TEMP3="${JS_FILE}.tmp3"
+TEMP4="${JS_FILE}.tmp4"
 
 if [ "$FORCE_LOG_MODE" = "true" ]; then
-    bash "$SCRIPT_DIR/polish/functions.sh" "$JS_FILE"
-    bash "$SCRIPT_DIR/polish/const.sh" "$JS_FILE"
-    bash "$SCRIPT_DIR/polish/let.sh" "$JS_FILE"
+    bash "$SCRIPT_DIR/polish/consolelog.sh" "$JS_FILE" "$TEMP1"
+    bash "$SCRIPT_DIR/polish/functions.sh" "$TEMP1" "$TEMP2"
+    bash "$SCRIPT_DIR/polish/const.sh" "$TEMP2" "$TEMP3"
+    bash "$SCRIPT_DIR/polish/let.sh" "$TEMP3" "$TEMP4"
 else
-    bash "$SCRIPT_DIR/polish/functions.sh" "$JS_FILE" >/dev/null 2>&1
-    bash "$SCRIPT_DIR/polish/const.sh" "$JS_FILE" >/dev/null 2>&1
-    bash "$SCRIPT_DIR/polish/let.sh" "$JS_FILE" >/dev/null 2>&1
+    bash "$SCRIPT_DIR/polish/consolelog.sh" "$JS_FILE" "$TEMP1" >/dev/null 2>&1
+    bash "$SCRIPT_DIR/polish/functions.sh" "$TEMP1" "$TEMP2" >/dev/null 2>&1
+    bash "$SCRIPT_DIR/polish/const.sh" "$TEMP2" "$TEMP3" >/dev/null 2>&1
+    bash "$SCRIPT_DIR/polish/let.sh" "$TEMP3" "$TEMP4" >/dev/null 2>&1
 fi
+
+# Move final result to output file
+mv "$TEMP4" "$OUTPUT_FILE"
+# Clean up temporary files
+rm -f "$TEMP1" "$TEMP2" "$TEMP3"
 
 exit $?
