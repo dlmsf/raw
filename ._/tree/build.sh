@@ -5,6 +5,8 @@
 # Added support for .sh files in addition to .asm and binaries
 # Added --verbose mode to show full logs including nested executions
 # NEW: Detects bare assignments (variable = value) and treats them as reassignments
+# FIX: check_executable_exists now returns 0 even when no file is found to avoid
+#      premature exit due to 'set -e', ensuring the fallback 'call' handler runs.
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -273,7 +275,8 @@ parse_method_name() {
 }
 
 # Function to check for available executable files in order of preference
-# Returns: "binary", "asm", "sh", or ""
+# Returns: "binary", "asm", "sh", or "" (empty string if not found)
+# IMPORTANT: Now always returns exit code 0 so 'set -e' does not terminate the script.
 check_executable_exists() {
     local base_path="$1"
    
@@ -290,8 +293,9 @@ check_executable_exists() {
         echo "sh"
         return 0
     else
+        # No file found; output empty string and return 0 to avoid set -e exit
         echo ""
-        return 1
+        return 0
     fi
 }
 
