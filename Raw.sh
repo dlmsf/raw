@@ -1165,7 +1165,7 @@ handle_cli() {
     local previous_output=""
 
     while true; do
-        echo -ne "${GREEN}rawjs> ${NC}"
+        echo -ne "${GREEN} > ${NC}"
         if ! IFS= read -r user_input; then
             echo ""
             break
