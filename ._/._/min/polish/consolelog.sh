@@ -50,160 +50,137 @@ process_js() {
     local input="$1"
     local len=${#input}
     local output=""
-    local stmt_buffer=""
-    local declarations_to_prepend=""
+    local current_pos=0
     
-    local i=0
-    
-    # State flags
-    local in_sq=0
-    local in_dq=0
-    local in_bt=0
-    local in_cmt_l=0
-    local in_cmt_b=0
-    local brace_depth=0
-
-    while (( i < len )); do
-        local char="${input:$i:1}"
-        local next_char="${input:$((i+1)):1}"
+    while (( current_pos < len )); do
+        # Skip whitespace and newlines
+        while (( current_pos < len )) && [[ "${input:$current_pos:1}" =~ [[:space:]] ]]; do
+            output+="${input:$current_pos:1}"
+            ((current_pos++))
+        done
         
-        # Handle strings and comments
-        if (( in_sq )); then
-            stmt_buffer+="$char"
-            if [[ "$char" == "'" && "${input:$((i-1)):1}" != "\\" ]]; then in_sq=0; fi
-            ((i++)); continue
-        elif (( in_dq )); then
-            stmt_buffer+="$char"
-            if [[ "$char" == '"' && "${input:$((i-1)):1}" != "\\" ]]; then in_dq=0; fi
-            ((i++)); continue
-        elif (( in_bt )); then
-            stmt_buffer+="$char"
-            if [[ "$char" == '`' && "${input:$((i-1)):1}" != "\\" ]]; then in_bt=0; fi
-            ((i++)); continue
-        elif (( in_cmt_l )); then
-            stmt_buffer+="$char"
-            if [[ "$char" == $'\n' ]]; then in_cmt_l=0; fi
-            ((i++)); continue
-        elif (( in_cmt_b )); then
-            stmt_buffer+="$char"
-            if [[ "$char" == '*' && "$next_char" == '/' ]]; then
-                stmt_buffer+="/"
-                in_cmt_b=0
-                ((i+=2)); continue
-            fi
-            ((i++)); continue
-        else
-            if [[ "$char" == "'" ]]; then in_sq=1; stmt_buffer+="$char"; ((i++)); continue; fi
-            if [[ "$char" == '"' ]]; then in_dq=1; stmt_buffer+="$char"; ((i++)); continue; fi
-            if [[ "$char" == '`' ]]; then in_bt=1; stmt_buffer+="$char"; ((i++)); continue; fi
-            if [[ "$char" == '/' && "$next_char" == '/' ]]; then in_cmt_l=1; stmt_buffer+="//"; ((i+=2)); continue; fi
-            if [[ "$char" == '/' && "$next_char" == '*' ]]; then in_cmt_b=1; stmt_buffer+="/*"; ((i+=2)); continue; fi
+        if (( current_pos >= len )); then
+            break
         fi
-
-        # Detect console.log call
-        if [[ "$char" == "c" && "${input:$i:11}" == "console.log" ]]; then
-            local prev_char="${input:$((i-1)):1}"
+        
+        # Check if we're at the start of console.log
+        if [[ "${input:$current_pos:11}" == "console.log" ]]; then
+            # Check if it's not part of a larger identifier
+            local prev_char=""
+            if (( current_pos > 0 )); then
+                prev_char="${input:$((current_pos-1)):1}"
+            fi
+            
             if [[ "$prev_char" =~ [a-zA-Z0-9_$] ]]; then
-                stmt_buffer+="$char"
-                ((i++))
+                # Part of larger identifier, skip
+                output+="${input:$current_pos:1}"
+                ((current_pos++))
                 continue
             fi
-
-            local after_log=$((i+11))
-            while [[ "${input:$after_log:1}" =~ [[:space:]] ]]; do ((after_log++)); done
-            if [[ "${input:$after_log:1}" != "(" ]]; then
-                stmt_buffer+="$char"
-                ((i++))
-                continue
-            fi
-
-            local paren_open=$after_log
-            local j=$((paren_open+1))
-            local depth=1
-            local in_str=0
-            local str_char=""
-            local in_tmpl=0
-            local in_line_comment=0
-            local in_block_comment=0
-
-            while (( j < len )); do
-                local c="${input:$j:1}"
-                local cnext="${input:$((j+1)):1}"
-                if (( in_line_comment )); then
-                    if [[ "$c" == $'\n' ]]; then in_line_comment=0; fi
-                elif (( in_block_comment )); then
-                    if [[ "$c" == '*' && "$cnext" == '/' ]]; then in_block_comment=0; ((j++)); fi
-                elif [[ "$c" == "'" || "$c" == '"' ]]; then
-                    if [[ "$c" == "'" ]]; then str_char="'"; else str_char='"'; fi
-                    in_str=1
-                elif [[ "$c" == '`' ]]; then
-                    in_tmpl=1
-                elif (( in_str )); then
-                    if [[ "$c" == "$str_char" && "${input:$((j-1)):1}" != "\\" ]]; then in_str=0; fi
-                elif (( in_tmpl )); then
-                    if [[ "$c" == '`' && "${input:$((j-1)):1}" != "\\" ]]; then in_tmpl=0; fi
-                elif [[ "$c" == '/' && "$cnext" == '/' ]]; then
-                    in_line_comment=1; ((j++))
-                elif [[ "$c" == '/' && "$cnext" == '*' ]]; then
-                    in_block_comment=1; ((j++))
-                elif [[ "$c" == '(' ]]; then
-                    ((depth++))
-                elif [[ "$c" == ')' ]]; then
-                    ((depth--))
-                    if (( depth == 0 )); then break; fi
-                fi
-                ((j++))
+            
+            # Find the opening parenthesis
+            local paren_pos=$((current_pos + 11))
+            while (( paren_pos < len )) && [[ "${input:$paren_pos:1}" =~ [[:space:]] ]]; do
+                paren_pos=$((paren_pos + 1))
             done
-
-            if (( j >= len )); then
-                stmt_buffer+="$char"
-                ((i++))
+            
+            if [[ "${input:$paren_pos:1}" != "(" ]]; then
+                # Not a function call, just copy
+                output+="${input:$current_pos:11}"
+                current_pos=$((current_pos + 11))
                 continue
             fi
-
-            local args="${input:$((paren_open+1)):$((j - paren_open - 1))}"
-            local new_i=$((j+1))
+            
+            # Find matching closing parenthesis
+            local close_paren=$((paren_pos + 1))
+            local depth=1
+            local in_string=0
+            local string_char=""
+            
+            while (( close_paren < len )); do
+                local c="${input:$close_paren:1}"
+                
+                if (( in_string )); then
+                    if [[ "$c" == "$string_char" && "${input:$((close_paren-1)):1}" != "\\" ]]; then
+                        in_string=0
+                    fi
+                else
+                    if [[ "$c" == "'" || "$c" == '"' || "$c" == '`' ]]; then
+                        in_string=1
+                        string_char="$c"
+                    elif [[ "$c" == "(" ]]; then
+                        ((depth++))
+                    elif [[ "$c" == ")" ]]; then
+                        ((depth--))
+                        if (( depth == 0 )); then
+                            break
+                        fi
+                    fi
+                fi
+                ((close_paren++))
+            done
+            
+            if (( close_paren >= len )); then
+                # No closing parenthesis found
+                output+="${input:$current_pos:11}"
+                current_pos=$((current_pos + 11))
+                continue
+            fi
+            
+            # Extract the argument
+            local args="${input:$((paren_pos+1)):$((close_paren - paren_pos - 1))}"
             local trimmed_args="$(echo "$args" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-
+            
+            # Check if it contains comma (multiple arguments)
             if [[ "$trimmed_args" == *","* ]]; then
-                stmt_buffer+="${input:$i:$((new_i - i))}"
-                i=$new_i
+                # Copy as-is
+                output+="${input:$current_pos:$((close_paren - current_pos + 1))}"
+                current_pos=$((close_paren + 1))
                 continue
             fi
-
+            
+            # Check if simple
             if is_simple "$trimmed_args"; then
-                stmt_buffer+="${input:$i:$((new_i - i))}"
-                i=$new_i
+                # Copy as-is
+                output+="${input:$current_pos:$((close_paren - current_pos + 1))}"
+                current_pos=$((close_paren + 1))
                 continue
             fi
-
-            # Generate declaration using const (will match const.sh style)
+            
+            # Complex argument - generate declaration
             local name=$(generate_name "log")
             local declaration="const ${name} = ${trimmed_args};"
-            declarations_to_prepend+="$declaration"$'\n'
-            stmt_buffer+="console.log(${name})"
-            i=$new_i
+            
+            # Write declaration and console.log
+            output+="$declaration"$'\n'
+            output+="console.log(${name})"
+            
+            # Move past the closing parenthesis
+            current_pos=$((close_paren + 1))
+            
+            # Check for semicolon after
+            while (( current_pos < len )) && [[ "${input:$current_pos:1}" =~ [[:space:]] ]]; do
+                output+="${input:$current_pos:1}"
+                ((current_pos++))
+            done
+            
+            if [[ "${input:$current_pos:1}" == ";" ]]; then
+                output+=";"
+                ((current_pos++))
+            fi
+            
             continue
         fi
-
-        # Normal character processing
-        stmt_buffer+="$char"
-        if [[ "$char" == "{" ]]; then ((brace_depth++)); fi
-        if [[ "$char" == "}" ]]; then ((brace_depth--)); fi
         
-        if [[ "$char" == ";" && $brace_depth -eq 0 ]]; then
-            output+="$declarations_to_prepend$stmt_buffer"
-            stmt_buffer=""
-            declarations_to_prepend=""
-        fi
-        
-        ((i++))
+        # Regular character, copy to output
+        output+="${input:$current_pos:1}"
+        ((current_pos++))
     done
-
-    output+="$declarations_to_prepend$stmt_buffer"
+    
     echo "$output"
 }
 
+# Execute transformation
 RESULT=$(process_js "$CONTENT")
 echo "$RESULT" > "$OUTPUT_FILE"
 echo "Transformation complete. Output saved to $OUTPUT_FILE"
