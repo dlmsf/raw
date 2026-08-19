@@ -1196,8 +1196,7 @@ handle_cli() {
             echo -e "${YELLOW}errorgen detected. Writing full transcript to .rawjs_cli.js and generating logs...${NC}"
 
             # Write the complete transcript (all lines typed) to the file
-            printf "%s
-" "$full_transcript" > "$cli_js_file"
+            printf "%s\n" "$full_transcript" > "$cli_js_file"
 
             local log_file="$CALLER_DIR/.rawjs_cli.log.txt"
             local verbose_file="$CALLER_DIR/.rawjs_cli.verbose.txt"
@@ -1214,6 +1213,27 @@ handle_cli() {
             echo -e "${BLUE}Running with --asm...${NC}"
             (cd "$CALLER_DIR" && bash "$SCRIPT_DIR/Raw.sh" --asm .rawjs_cli.js > /dev/null 2>&1)
             local asm_status=$?
+
+            # Strip ANSI codes from log and verbose files
+            echo -e "${BLUE}Stripping ANSI codes from log and verbose files...${NC}"
+            
+            # Create temporary files for stripped content
+            local log_file_stripped="${log_file}.stripped"
+            local verbose_file_stripped="${verbose_file}.stripped"
+            
+            # Strip ANSI codes from log file
+            if [ -f "$log_file" ]; then
+                strip_ansi_codes "$(cat "$log_file")" > "$log_file_stripped"
+                mv_file "$log_file_stripped" "$log_file"
+                echo -e "${GREEN}✓ ANSI codes stripped from log file${NC}"
+            fi
+            
+            # Strip ANSI codes from verbose file
+            if [ -f "$verbose_file" ]; then
+                strip_ansi_codes "$(cat "$verbose_file")" > "$verbose_file_stripped"
+                mv_file "$verbose_file_stripped" "$verbose_file"
+                echo -e "${GREEN}✓ ANSI codes stripped from verbose file${NC}"
+            fi
 
             echo -e "${BLUE}Generating full output file...${NC}"
             {
