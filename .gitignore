@@ -18,3 +18,4 @@ new/
 buildsaves.cfg
 build/
 result
+*.json

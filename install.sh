@@ -277,6 +277,33 @@ install_system_packages() {
 }
 
 # -----------------------------------------------------------------------------
+# NEW FUNCTION: Preserve config files before removal
+# -----------------------------------------------------------------------------
+preserve_config_files() {
+  PRESERVED_CONFIGS=""
+  
+  # Check for RawJS config.txt
+  if [ -f "$INSTALL_DIR/config.txt" ]; then
+    PRESERVED_CONFIGS=$(cat "$INSTALL_DIR/config.txt")
+    log_message "Preserving config.txt from existing installation"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# NEW FUNCTION: Restore config files after installation
+# -----------------------------------------------------------------------------
+restore_config_files() {
+  if [ -n "$PRESERVED_CONFIGS" ]; then
+    # Create the installation directory if it doesn't exist
+    mkdir -p "$INSTALL_DIR"
+    
+    # Restore config.txt
+    echo "$PRESERVED_CONFIGS" > "$INSTALL_DIR/config.txt"
+    log_message "Restored config.txt to installation directory"
+  fi
+}
+
+# -----------------------------------------------------------------------------
 # FILE COPYING
 # -----------------------------------------------------------------------------
 copy_files() {
@@ -431,6 +458,10 @@ verify_basm_structure() {
 # -----------------------------------------------------------------------------
 remove_installation() {
   log_message "Removing existing installation..."
+  
+  # NEW: Preserve config files before removal
+  preserve_config_files
+  
   [ -L "$BIN_DIR/raw" ] && rm -f "$BIN_DIR/raw" && log_message "Removed symlink: raw"
   [ -L "$BIN_DIR/basm" ] && rm -f "$BIN_DIR/basm" && log_message "Removed symlink: basm"
   [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR" && log_message "Removed installation directory"
@@ -1819,6 +1850,9 @@ if [ "$INSTALL_BASM" = true ]; then
   fi
 fi
 
+# NEW: Restore config files after installation
+restore_config_files
+
 # Create wrappers
 create_raw_wrapper "$INSTALL_DIR"
 if [ "$INSTALL_BASM" = true ]; then create_basm_wrapper "$INSTALL_DIR"; fi
@@ -1868,6 +1902,7 @@ else
   echo "       bash Raw.sh --<tool> [args...]"
   echo "       bash Raw.sh --tools"
   echo "       bash Raw.sh --version"
+  echo "       bash Raw.sh --dev"
   echo "       bash Raw.sh --asm [path/to/file.js] [args...]"
   echo
   if [ "$INSTALL_BASM" = true ]; then

@@ -3,6 +3,64 @@
 # Raw.sh - Main build script with conditional compilation (silent mode)
 
 # ============================================
+# CONFIGURATION FILE MANAGEMENT (NEW)
+# ============================================
+CONFIG_FILE="$SCRIPT_DIR/config.txt"  # Will be set after SCRIPT_DIR is defined
+
+# Function: Load configuration from config.txt
+# Format: Each line is "key=value"
+load_config() {
+    CONFIG_DEV_MODE="false"  # Default value
+    
+    if [ -f "$CONFIG_FILE" ]; then
+        while IFS='=' read -r key value; do
+            case "$key" in
+                "dev_mode") CONFIG_DEV_MODE="$value" ;;
+            esac
+        done < "$CONFIG_FILE"
+    fi
+}
+
+# Function: Save configuration to config.txt
+save_config() {
+    # Preserve existing config and update only the changed values
+    local temp_file="${CONFIG_FILE}.tmp"
+    local dev_mode_written=false
+    
+    # Copy existing config if it exists
+    if [ -f "$CONFIG_FILE" ]; then
+        while IFS='=' read -r key value; do
+            if [ "$key" = "dev_mode" ]; then
+                echo "dev_mode=$CONFIG_DEV_MODE" >> "$temp_file"
+                dev_mode_written=true
+            else
+                echo "$key=$value" >> "$temp_file"
+            fi
+        done < "$CONFIG_FILE"
+    fi
+    
+    # Add dev_mode if not already written
+    if [ "$dev_mode_written" = false ]; then
+        echo "dev_mode=$CONFIG_DEV_MODE" >> "$temp_file"
+    fi
+    
+    mv "$temp_file" "$CONFIG_FILE"
+}
+
+# Function: Toggle dev mode
+toggle_dev_mode() {
+    load_config
+    if [ "$CONFIG_DEV_MODE" = "true" ]; then
+        CONFIG_DEV_MODE="false"
+        echo -e "${YELLOW}Dev mode disabled. Raw.sh without arguments will show usage.${NC}"
+    else
+        CONFIG_DEV_MODE="true"
+        echo -e "${GREEN}Dev mode enabled. Raw.sh without arguments will launch CLI.${NC}"
+    fi
+    save_config
+}
+
+# ============================================
 # SAVE CALLER'S DIRECTORY AND RESOLVE JS FILE FIRST
 # ============================================
 CALLER_DIR="$(pwd)"  # Save where the script was called from
@@ -24,6 +82,13 @@ if [ $# -gt 0 ]; then
     if [ "$1" = "--test" ] || [ "$1" = "--reset" ]; then
         SPECIAL_MODE="$1"
         shift  # Remove the flag from arguments
+    elif [ "$1" = "--dev" ]; then
+        # NEW: Toggle dev mode
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        CONFIG_FILE="$SCRIPT_DIR/config.txt"
+        load_config
+        toggle_dev_mode
+        exit 0
     elif [ "$1" = "--cli" ]; then
         CLI_MODE="true"
         shift  # Remove --cli flag
@@ -125,7 +190,7 @@ if [ $# -gt 0 ]; then
         fi
     else
         # NEW: Check if first argument is a tool name (starts with -- and not a known flag)
-        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--verbose" ] && [ "$1" != "--asm" ] && [ "$1" != "--bin" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--stools" ] && [ "$1" != "--stool" ] && [ "$1" != "--cli" ]; then
+        if [[ "$1" == --* ]] && [ "$1" != "--log" ] && [ "$1" != "--verbose" ] && [ "$1" != "--asm" ] && [ "$1" != "--bin" ] && [ "$1" != "--test" ] && [ "$1" != "--reset" ] && [ "$1" != "--version" ] && [ "$1" != "--v" ] && [ "$1" != "-v" ] && [ "$1" != "-version" ] && [ "$1" != "--tools" ] && [ "$1" != "--stools" ] && [ "$1" != "--stool" ] && [ "$1" != "--cli" ] && [ "$1" != "--dev" ]; then
             # Extract tool name by removing leading --
             TOOL_COMMAND="${1#--}"
             TOOL_MODE="true"
@@ -193,6 +258,10 @@ fi
 # ============================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"  # Change to script's directory to ensure consistent paths
+
+# NOW load configuration
+CONFIG_FILE="$SCRIPT_DIR/config.txt"
+load_config
 
 # Now JS_FILE contains the absolute path to the JS file from caller's perspective
 # The rest of the script continues exactly as before...
@@ -964,6 +1033,7 @@ show_usage() {
     echo -e "${YELLOW}       bash Raw.sh --reset${NC}"
     echo -e "${YELLOW}       bash Raw.sh --test${NC}"
     echo -e "${YELLOW}       bash Raw.sh --cli${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --dev${NC}"
     echo -e "${YELLOW}       bash Raw.sh --tool [command] [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --<tool> [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --tools${NC}"
@@ -2231,8 +2301,25 @@ main_flow() {
         fi
         
     else
-        show_usage
-        exit 1
+        # NEW: Check if dev mode is enabled and no JS file provided
+        if [ "$CONFIG_DEV_MODE" = "true" ]; then
+            # Dev mode enabled - launch CLI instead of showing usage
+            CLI_MODE="true"
+            # Check if dev directory exists
+            if [ ! -d "$SCRIPT_DIR/dev" ]; then
+                echo -e "${YELLOW}Dev directory doesn't exist. Building first...${NC}"
+                compile_and_copy
+                if [ $? -ne 0 ]; then
+                    echo -e "${RED}Build failed! Cannot start CLI mode.${NC}"
+                    exit 1
+                fi
+            fi
+            handle_cli
+            exit $?
+        else
+            show_usage
+            exit 1
+        fi
     fi
 }
 
