@@ -1138,15 +1138,10 @@ generate_binary() {
 
 # Creates an interactive CLI where each line is treated as JS code
 handle_cli() {
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${GREEN}  RawJS Interactive CLI${NC}"
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${YELLOW}Type your JavaScript code line by line.${NC}"
-    echo -e "${YELLOW}Each line will be executed immediately.${NC}"
-    echo -e "${YELLOW}Type 'exit' or 'quit' to leave.${NC}"
-    echo -e "${YELLOW}Type 'clear' to clear accumulated code.${NC}"
-    echo -e "${YELLOW}Type 'errorgen' to write all lines to .rawjs_cli.js, generate --log and --verbose logs, and exit.${NC}"
-    echo -e "${BLUE}========================================${NC}"
+    # Clear terminal at start
+    clear
+    
+    echo -e "${GREEN}rawjs${NC} ${YELLOW}· exit | clear | errorgen${NC}"
     echo ""
     
     # Create temp JS file in caller directory
@@ -1178,7 +1173,7 @@ handle_cli() {
         
         # Check for exit commands
         if [ "$user_input" = "exit" ] || [ "$user_input" = "quit" ]; then
-            echo -e "${YELLOW}Goodbye!${NC}"
+            clear
             break
         fi
         
@@ -1188,7 +1183,9 @@ handle_cli() {
             full_script=""
             previous_output=""
             error_lines=()
-            echo -e "${BLUE}Cleared accumulated code and error history.${NC}"
+            clear
+            echo -e "${GREEN}rawjs${NC} ${YELLOW}· exit | clear | errorgen${NC}"
+            echo ""
             continue
         fi
         
