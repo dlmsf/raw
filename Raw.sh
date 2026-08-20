@@ -1,12 +1,121 @@
 #!/bin/bash
 
-# Raw.sh - Main build script with conditional compilation (silent mode)
-# -----------------------------------------------------------------------------
-# This version introduces a per-terminal runtime pool with active/inactive locks.
-# Every invocation of Raw.sh acquires a unique working directory from the pool.
-# Nested Raw.sh calls from the same terminal reuse the exact same directory,
-# preventing --test, --reset and errorgen from destroying or blocking each other.
-# -----------------------------------------------------------------------------
+# ============================================================================
+# Raw.sh - ROUTER + ISOLATED PRIVATE WORKER
+# ============================================================================
+# This file acts as a router when invoked from the original location.
+# It creates/uses a private complete copy of the entire project for the
+# calling terminal, then hands off execution to that private copy.
+# Each terminal has a permanently isolated environment, making concurrent
+# invocations fully independent.
+#
+# Once inside a private copy (marker env var or .rawjs_private file exists),
+# the router block is skipped and the original Raw.sh logic executes.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# EARLY SCRIPT LOCATION AND CALLER DIRECTORY
+# ----------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CALLER_DIR="$(pwd)"
+
+# ----------------------------------------------------------------------------
+# ROUTER DISPATCH (only if not already inside a private copy)
+# ----------------------------------------------------------------------------
+if [ -z "${RAWJS_PRIVATE_MODE:-}" ] && [ ! -f "$SCRIPT_DIR/.rawjs_private" ]; then
+
+    # --- Router helpers -----------------------------------------------------
+    router_get_terminal_id() {
+        local tty_name
+        tty_name=$(tty 2>/dev/null)
+        if [ -n "$tty_name" ] && [ "$tty_name" != "not a tty" ]; then
+            echo "$tty_name"
+            return 0
+        fi
+
+        local sid
+        sid=$(ps -o sid= -p $$ 2>/dev/null | tr -d ' ')
+        if [ -n "$sid" ]; then
+            echo "session_$sid"
+        else
+            echo "pid_$$"
+        fi
+    }
+
+    router_sanitize_id() {
+        echo "$1" | tr '/' '_' | tr -cd '[:alnum:]_-'
+    }
+
+    # --- Determine isolated private root for this terminal -----------------
+    ROUTER_TID_RAW="$(router_get_terminal_id)"
+    ROUTER_TID="$(router_sanitize_id "$ROUTER_TID_RAW")"
+    ROUTER_PRIVATE_ROOT="$SCRIPT_DIR/.terminals/$ROUTER_TID"
+    ROUTER_LOCK_DIR="$SCRIPT_DIR/.router_locks"
+    ROUTER_LOCK="$ROUTER_LOCK_DIR/${ROUTER_TID}.lock"
+
+    mkdir -p "$ROUTER_LOCK_DIR"
+
+    # Clean stale router locks (older than 60 seconds)
+    find "$ROUTER_LOCK_DIR" -mindepth 1 -maxdepth 1 -type d -mmin +1 -exec rmdir {} \; 2>/dev/null
+
+    # --- Acquire router lock with stale detection --------------------------
+    ROUTER_ACQUIRED=0
+    while [ "$ROUTER_ACQUIRED" -eq 0 ]; do
+        if mkdir "$ROUTER_LOCK" 2>/dev/null; then
+            ROUTER_ACQUIRED=1
+        else
+            if [ -d "$ROUTER_LOCK" ]; then
+                # If lock is stale (older than 60 seconds), remove it
+                ROUTER_LOCK_AGE=$(find "$ROUTER_LOCK" -maxdepth 0 -mmin +1 2>/dev/null | wc -l)
+                if [ "$ROUTER_LOCK_AGE" -gt 0 ]; then
+                    rm -rf "$ROUTER_LOCK" 2>/dev/null
+                    continue
+                fi
+            fi
+            sleep 0.1
+        fi
+    done
+
+    # --- Ensure a complete private copy exists -----------------------------
+    if [ ! -f "$ROUTER_PRIVATE_ROOT/Raw.sh" ] || [ ! -d "$ROUTER_PRIVATE_ROOT/._" ]; then
+        echo "Initializing isolated environment for terminal: $ROUTER_TID_RAW ..." >&2
+        rm -rf "$ROUTER_PRIVATE_ROOT" 2>/dev/null
+        mkdir -p "$ROUTER_PRIVATE_ROOT"
+
+        # Copy entire project except router-specific and runtime directories.
+        # The private copy will create its own runtime pool directories.
+        (
+            cd "$SCRIPT_DIR" && \
+            tar \
+                --exclude='./.terminals' \
+                --exclude='./.router_locks' \
+                --exclude='./.runtime_locks' \
+                --exclude='./dev' \
+                --exclude='./dev_*' \
+                -cf - .
+        ) | (
+            cd "$ROUTER_PRIVATE_ROOT" && tar -xf -
+        )
+
+        # Mark as private and ensure Raw.sh is executable
+        touch "$ROUTER_PRIVATE_ROOT/.rawjs_private"
+        chmod +x "$ROUTER_PRIVATE_ROOT/Raw.sh" 2>/dev/null
+    fi
+
+    # Release router lock
+    rmdir "$ROUTER_LOCK" 2>/dev/null
+
+    # Hand off to the private Raw.sh. The environment variable tells it to
+    # skip the router and execute the original logic.
+    export RAWJS_PRIVATE_MODE=1
+    export RAWJS_PRIVATE_ROOT="$ROUTER_PRIVATE_ROOT"
+    exec bash "$ROUTER_PRIVATE_ROOT/Raw.sh" "$@"
+    exit 127  # Should never reach here
+fi
+
+# ============================================================================
+# ORIGINAL Raw.sh LOGIC - runs only inside the private environment
+# ============================================================================
 
 # ============================================
 # CONFIGURATION FILE MANAGEMENT
