@@ -1,17 +1,137 @@
 #!/bin/bash
 
-# Raw.sh - Main build script with conditional compilation (silent mode)
-# -----------------------------------------------------------------------------
-# This version introduces a per-terminal runtime pool with active/inactive locks.
-# Every invocation of Raw.sh acquires a unique working directory from the pool.
-# Nested Raw.sh calls from the same terminal reuse the exact same directory,
-# preventing --test, --reset and errorgen from destroying or blocking each other.
-# -----------------------------------------------------------------------------
+# ============================================================================
+# Raw.sh - ROUTER + ISOLATED PRIVATE WORKER
+# ============================================================================
+# This file acts as a router when invoked from the original location.
+# It creates/uses a private complete copy of the entire project for the
+# calling terminal, then hands off execution to that private copy.
+# Each terminal has a permanently isolated environment, making concurrent
+# invocations fully independent.
+#
+# Once inside a private copy (marker env var or .rawjs_private file exists),
+# the router block is skipped and the original Raw.sh logic executes.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# EARLY SCRIPT LOCATION AND CALLER DIRECTORY
+# ----------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CALLER_DIR="$(pwd)"
+
+# ----------------------------------------------------------------------------
+# ROUTER DISPATCH (only if not already inside a private copy)
+# ----------------------------------------------------------------------------
+if [ -z "${RAWJS_PRIVATE_MODE:-}" ] && [ ! -f "$SCRIPT_DIR/.rawjs_private" ]; then
+
+    # --- Router helpers -----------------------------------------------------
+    router_get_terminal_id() {
+        local tty_name
+        tty_name=$(tty 2>/dev/null)
+        if [ -n "$tty_name" ] && [ "$tty_name" != "not a tty" ]; then
+            echo "$tty_name"
+            return 0
+        fi
+
+        local sid
+        sid=$(ps -o sid= -p $$ 2>/dev/null | tr -d ' ')
+        if [ -n "$sid" ]; then
+            echo "session_$sid"
+        else
+            echo "pid_$$"
+        fi
+    }
+
+    router_sanitize_id() {
+        echo "$1" | tr '/' '_' | tr -cd '[:alnum:]_-'
+    }
+
+    # --- Determine isolated private root for this terminal -----------------
+    ROUTER_TID_RAW="$(router_get_terminal_id)"
+    ROUTER_TID="$(router_sanitize_id "$ROUTER_TID_RAW")"
+    ROUTER_PRIVATE_ROOT="$SCRIPT_DIR/.terminals/$ROUTER_TID"
+    ROUTER_LOCK_DIR="$SCRIPT_DIR/.router_locks"
+    ROUTER_LOCK="$ROUTER_LOCK_DIR/${ROUTER_TID}.lock"
+    ROUTER_GLOBAL_CONFIG="$SCRIPT_DIR/config.txt"
+
+    mkdir -p "$ROUTER_LOCK_DIR"
+
+    # Clean stale router locks (older than 60 seconds)
+    find "$ROUTER_LOCK_DIR" -mindepth 1 -maxdepth 1 -type d -mmin +1 -exec rmdir {} \; 2>/dev/null
+
+    # --- Acquire router lock with stale detection --------------------------
+    ROUTER_ACQUIRED=0
+    while [ "$ROUTER_ACQUIRED" -eq 0 ]; do
+        if mkdir "$ROUTER_LOCK" 2>/dev/null; then
+            ROUTER_ACQUIRED=1
+        else
+            if [ -d "$ROUTER_LOCK" ]; then
+                # If lock is stale (older than 60 seconds), remove it
+                ROUTER_LOCK_AGE=$(find "$ROUTER_LOCK" -maxdepth 0 -mmin +1 2>/dev/null | wc -l)
+                if [ "$ROUTER_LOCK_AGE" -gt 0 ]; then
+                    rm -rf "$ROUTER_LOCK" 2>/dev/null
+                    continue
+                fi
+            fi
+            sleep 0.1
+        fi
+    done
+
+    # --- Ensure a complete private copy exists -----------------------------
+    ROUTER_FIRST_RUN=0
+    if [ ! -f "$ROUTER_PRIVATE_ROOT/Raw.sh" ] || [ ! -d "$ROUTER_PRIVATE_ROOT/._" ]; then
+        echo "Initializing isolated environment for terminal: $ROUTER_TID_RAW ..." >&2
+        ROUTER_FIRST_RUN=1
+        rm -rf "$ROUTER_PRIVATE_ROOT" 2>/dev/null
+        mkdir -p "$ROUTER_PRIVATE_ROOT"
+
+        # Copy entire project except router-specific and runtime directories.
+        # The private copy will create its own runtime pool directories.
+        (
+            cd "$SCRIPT_DIR" && \
+            tar \
+                --exclude='./.terminals' \
+                --exclude='./.router_locks' \
+                --exclude='./.runtime_locks' \
+                --exclude='./dev' \
+                --exclude='./dev_*' \
+                -cf - .
+        ) | (
+            cd "$ROUTER_PRIVATE_ROOT" && tar -xf -
+        )
+
+        # Mark as private and ensure Raw.sh is executable
+        touch "$ROUTER_PRIVATE_ROOT/.rawjs_private"
+        chmod +x "$ROUTER_PRIVATE_ROOT/Raw.sh" 2>/dev/null
+    fi
+
+    # --- Sync global config to private copy --------------------------------
+    # FIX: Ensure the private copy gets the latest global config
+    if [ -f "$ROUTER_GLOBAL_CONFIG" ]; then
+        cp "$ROUTER_GLOBAL_CONFIG" "$ROUTER_PRIVATE_ROOT/config.txt" 2>/dev/null
+    fi
+
+    # Release router lock
+    rmdir "$ROUTER_LOCK" 2>/dev/null
+
+    # Hand off to the private Raw.sh. The environment variable tells it to
+    # skip the router and execute the original logic.
+    export RAWJS_PRIVATE_MODE=1
+    export RAWJS_PRIVATE_ROOT="$ROUTER_PRIVATE_ROOT"
+    export RAWJS_FIRST_RUN="$ROUTER_FIRST_RUN"
+    exec bash "$ROUTER_PRIVATE_ROOT/Raw.sh" "$@"
+    exit 127  # Should never reach here
+fi
+
+# ============================================================================
+# ORIGINAL Raw.sh LOGIC - runs only inside the private environment
+# ============================================================================
 
 # ============================================
 # CONFIGURATION FILE MANAGEMENT
 # ============================================
 CONFIG_FILE="$SCRIPT_DIR/config.txt"  # Will be set after SCRIPT_DIR is defined
+GLOBAL_CONFIG_FILE=""  # Will be set to the original/global config location
 
 # Function: Load configuration from config.txt
 # Format: Each line is "key=value"
@@ -19,25 +139,37 @@ load_config() {
     CONFIG_DEV_MODE="false"  # Default value
     POOL_SIZE=3              # Default runtime pool size
 
-    if [ -f "$CONFIG_FILE" ]; then
+    # FIX: Load from global config if available, otherwise local
+    local config_to_load="$CONFIG_FILE"
+    if [ -n "$GLOBAL_CONFIG_FILE" ] && [ -f "$GLOBAL_CONFIG_FILE" ]; then
+        config_to_load="$GLOBAL_CONFIG_FILE"
+    fi
+
+    if [ -f "$config_to_load" ]; then
         while IFS='=' read -r key value; do
             case "$key" in
                 "dev_mode") CONFIG_DEV_MODE="$value" ;;
                 "pool_size") POOL_SIZE="$value" ;;
             esac
-        done < "$CONFIG_FILE"
+        done < "$config_to_load"
     fi
 }
 
 # Function: Save configuration to config.txt
 save_config() {
+    # FIX: Save to both global and local config files
+    local config_to_save="$CONFIG_FILE"
+    if [ -n "$GLOBAL_CONFIG_FILE" ]; then
+        config_to_save="$GLOBAL_CONFIG_FILE"
+    fi
+
     # Preserve existing config and update only the changed values
-    local temp_file="${CONFIG_FILE}.tmp"
+    local temp_file="${config_to_save}.tmp"
     local dev_mode_written=false
     local pool_size_written=false
 
     # Copy existing config if it exists
-    if [ -f "$CONFIG_FILE" ]; then
+    if [ -f "$config_to_save" ]; then
         while IFS='=' read -r key value; do
             if [ "$key" = "dev_mode" ]; then
                 echo "dev_mode=$CONFIG_DEV_MODE" >> "$temp_file"
@@ -48,7 +180,7 @@ save_config() {
             else
                 echo "$key=$value" >> "$temp_file"
             fi
-        done < "$CONFIG_FILE"
+        done < "$config_to_save"
     fi
 
     # Add dev_mode if not already written
@@ -60,7 +192,32 @@ save_config() {
         echo "pool_size=$POOL_SIZE" >> "$temp_file"
     fi
 
-    mv "$temp_file" "$CONFIG_FILE"
+    mv "$temp_file" "$config_to_save"
+    
+    # FIX: Also sync to local config if global was used
+    if [ -n "$GLOBAL_CONFIG_FILE" ] && [ "$config_to_save" != "$CONFIG_FILE" ]; then
+        cp "$config_to_save" "$CONFIG_FILE" 2>/dev/null
+    fi
+    
+    # FIX: Sync to all active terminal directories
+    sync_config_to_all_terminals
+}
+
+# FIX: New function to sync config to all active terminal directories
+sync_config_to_all_terminals() {
+    local source_config="$CONFIG_FILE"
+    if [ -n "$GLOBAL_CONFIG_FILE" ] && [ -f "$GLOBAL_CONFIG_FILE" ]; then
+        source_config="$GLOBAL_CONFIG_FILE"
+    fi
+    
+    # Find all terminal directories and sync the config
+    if [ -d "$SCRIPT_DIR/.terminals" ]; then
+        for terminal_dir in "$SCRIPT_DIR/.terminals"/*/; do
+            if [ -f "$terminal_dir/config.txt" ] || [ -d "$terminal_dir" ]; then
+                cp "$source_config" "$terminal_dir/config.txt" 2>/dev/null
+            fi
+        done
+    fi
 }
 
 # Function: Toggle dev mode
@@ -112,6 +269,10 @@ if [ $# -gt 0 ]; then
         # NEW: Toggle dev mode
         SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         CONFIG_FILE="$SCRIPT_DIR/config.txt"
+        # FIX: Set global config path
+        if [ -n "$RAWJS_PRIVATE_ROOT" ]; then
+            GLOBAL_CONFIG_FILE="$(dirname "$RAWJS_PRIVATE_ROOT")/../config.txt"
+        fi
         load_config
         toggle_dev_mode
         exit 0
@@ -284,6 +445,11 @@ fi
 # ============================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"  # Change to script's directory to ensure consistent paths
+
+# FIX: Set global config path for private instances
+if [ -n "$RAWJS_PRIVATE_ROOT" ]; then
+    GLOBAL_CONFIG_FILE="$(dirname "$RAWJS_PRIVATE_ROOT")/../config.txt"
+fi
 
 # NOW load configuration
 CONFIG_FILE="$SCRIPT_DIR/config.txt"
@@ -2657,6 +2823,34 @@ main_flow() {
     if [ $? -ne 0 ]; then
         echo -e "${RED}Failed to acquire working directory${NC}" >&2
         exit 1
+    fi
+
+    # FIX: Warmup on first run
+    if [ "$RAWJS_FIRST_RUN" = "1" ]; then
+        # Create a temporary warmup JS file
+        local warmup_file="$CALLER_DIR/.rawjs_warmup.js"
+        echo "run" > "$warmup_file"
+        
+        # Run the warmup silently
+        process_js_file "$warmup_file" >/dev/null 2>&1
+        if [ $? -eq 0 ]; then
+            OUTPUT_JS="$SCRIPT_DIR/output.js"
+            execute_file "silent" "./._/min/min" "$JS_FILE_PATH" >/dev/null 2>&1
+            execute_file "silent" "./._/min/polish.sh" "$OUTPUT_JS" >/dev/null 2>&1
+            execute_file "silent" "./build" >/dev/null 2>&1
+            mv_file "build_output.asm" "$WORKING_DIRECTORY/build_output.asm" 2>/dev/null
+            execute_file "silent" "./arch" "$OUTPUT_JS" >/dev/null 2>&1
+            mv_file "arch_output" "$WORKING_DIRECTORY/arch_output" 2>/dev/null
+            rm_file "$SCRIPT_DIR/output.js" 2>/dev/null
+            execute_file "silent" "./tree/build.sh" >/dev/null 2>&1
+            execute_file "silent" "./build_output.asm" >/dev/null 2>&1
+        fi
+        
+        # Clean up warmup file
+        rm_file "$warmup_file"
+        
+        # Reset first run flag
+        export RAWJS_FIRST_RUN=0
     fi
 
     # Step 7: Process the JS file if provided
