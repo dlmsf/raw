@@ -11,6 +11,13 @@
 #
 # Once inside a private copy (marker env var or .rawjs_private file exists),
 # the router block is skipped and the original Raw.sh logic executes.
+#
+# NEW: Base pool system.
+#   - A pool of pre-warmed private copies (bases) is maintained.
+#   - When a terminal first connects, it can use a pre-warmed base instead of
+#     copying from the original project, which is faster.
+#   - The pool size adapts dynamically based on recent terminal activity.
+#   - `bash Raw.sh --start` ensures the pool is filled synchronously.
 # ============================================================================
 
 # ----------------------------------------------------------------------------
@@ -53,11 +60,304 @@ if [ -z "${RAWJS_PRIVATE_MODE:-}" ] && [ ! -f "$SCRIPT_DIR/.rawjs_private" ]; th
     ROUTER_LOCK_DIR="$SCRIPT_DIR/.router_locks"
     ROUTER_LOCK="$ROUTER_LOCK_DIR/${ROUTER_TID}.lock"
     ROUTER_GLOBAL_CONFIG="$SCRIPT_DIR/config.txt"
+    ROUTER_BASE_POOL_DIR="$SCRIPT_DIR/.base_pool"
 
     mkdir -p "$ROUTER_LOCK_DIR"
+    mkdir -p "$ROUTER_BASE_POOL_DIR"
 
-    # Clean stale router locks (older than 60 seconds)
-    find "$ROUTER_LOCK_DIR" -mindepth 1 -maxdepth 1 -type d -mmin +1 -exec rmdir {} \; 2>/dev/null
+    # ---------------------------------------------------------------------
+    # BASE POOL FUNCTIONS (new modular block)
+    # ---------------------------------------------------------------------
+
+    # Count recent active terminal directories (last 5 minutes)
+    router_get_recent_active_count() {
+        find "$SCRIPT_DIR/.terminals" -mindepth 1 -maxdepth 1 -type d -mmin -5 2>/dev/null | wc -l
+    }
+
+    # Calculate target idle base count based on recent activity
+    # Uses exponential moving average for smoothness
+    router_calculate_target_idle() {
+        local recent="$1"
+        # Raw target: 3 + half of recent active terminals (rounded up)
+        local raw_target=$(( 3 + (recent + 1) / 2 ))
+
+        local stats_file="$ROUTER_BASE_POOL_DIR/.target"
+        if [ -f "$stats_file" ]; then
+            local prev_target
+            prev_target=$(cat "$stats_file" 2>/dev/null || echo "$raw_target")
+            # Ensure prev_target is numeric
+            if ! [[ "$prev_target" =~ ^[0-9]+$ ]]; then
+                prev_target="$raw_target"
+            fi
+            # Smooth: average previous and current raw
+            local new_target=$(( (prev_target + raw_target) / 2 ))
+            # Minimum 3
+            if [ "$new_target" -lt 3 ]; then
+                new_target=3
+            fi
+            echo "$new_target"
+        else
+            echo "$raw_target"
+        fi
+    }
+
+    # Return number of available base directories (exclude temporary ones)
+    router_count_available_bases() {
+        find "$ROUTER_BASE_POOL_DIR" -mindepth 1 -maxdepth 1 -type d ! -name '.tmp*' 2>/dev/null | wc -l
+    }
+
+    # Trim excess bases (oldest first) down to target
+    router_trim_bases() {
+        local target="$1"
+        local current
+        current=$(router_count_available_bases)
+        if [ "$current" -le "$target" ]; then
+            return 0
+        fi
+        local excess=$((current - target))
+        # List base dirs sorted by name (timestamped names are chronological)
+        find "$ROUTER_BASE_POOL_DIR" -mindepth 1 -maxdepth 1 -type d ! -name '.tmp*' 2>/dev/null \
+            | sort | head -n "$excess" | while IFS= read -r dir; do
+                rm -rf "$dir" 2>/dev/null
+            done
+    }
+
+    # Create a single base directory (optimized, never copies .git)
+    router_create_single_base() {
+        local temp_base="$1"
+        rm -rf "$temp_base"
+        mkdir -p "$temp_base"
+
+        # Use rsync if available (much faster than tar for large trees)
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a \
+                --exclude='.terminals' \
+                --exclude='.router_locks' \
+                --exclude='.base_pool' \
+                --exclude='.runtime_locks' \
+                --exclude='.git' \
+                --exclude='dev' \
+                --exclude='dev_*' \
+                "$SCRIPT_DIR/" "$temp_base/"
+        else
+            # Fallback to tar with aggressive .git exclusion
+            (
+                cd "$SCRIPT_DIR" && \
+                tar \
+                    --exclude='./.terminals' \
+                    --exclude='./.router_locks' \
+                    --exclude='./.base_pool' \
+                    --exclude='./.runtime_locks' \
+                    --exclude='./.git' \
+                    --exclude='./dev' \
+                    --exclude='./dev_*' \
+                    -cf - .
+            ) | (
+                cd "$temp_base" && tar -xf -
+            )
+        fi
+
+        if [ $? -eq 0 ]; then
+            touch "$temp_base/.rawjs_private"
+            chmod +x "$temp_base/Raw.sh"
+            return 0
+        else
+            rm -rf "$temp_base"
+            return 1
+        fi
+    }
+
+    # Spawn a background process to create bases until the pool reaches target
+    router_spawn_base_creator() {
+        local target="$1"
+        local lock_file="$ROUTER_LOCK_DIR/base_pool.lock"
+
+        # If a creator is already running, do nothing
+        if [ -d "$lock_file" ]; then
+            return 0
+        fi
+
+        nohup bash -c '
+            target='"$target"'
+            SCRIPT_DIR="'"$SCRIPT_DIR"'"
+            ROUTER_BASE_POOL_DIR="'"$ROUTER_BASE_POOL_DIR"'"
+            ROUTER_LOCK_DIR="'"$ROUTER_LOCK_DIR"'"
+            lock_file="'"$lock_file"'"
+
+            # Source the router functions from the parent script
+            router_create_single_base() {
+                local temp_base="$1"
+                rm -rf "$temp_base"
+                mkdir -p "$temp_base"
+
+                if command -v rsync >/dev/null 2>&1; then
+                    rsync -a \
+                        --exclude=".terminals" \
+                        --exclude=".router_locks" \
+                        --exclude=".base_pool" \
+                        --exclude=".runtime_locks" \
+                        --exclude=".git" \
+                        --exclude="dev" \
+                        --exclude="dev_*" \
+                        "$SCRIPT_DIR/" "$temp_base/"
+                else
+                    (
+                        cd "$SCRIPT_DIR" && \
+                        tar \
+                            --exclude="./.terminals" \
+                            --exclude="./.router_locks" \
+                            --exclude="./.base_pool" \
+                            --exclude="./.runtime_locks" \
+                            --exclude="./.git" \
+                            --exclude="./dev" \
+                            --exclude="./dev_*" \
+                            -cf - .
+                    ) | (
+                        cd "$temp_base" && tar -xf -
+                    )
+                fi
+
+                if [ $? -eq 0 ]; then
+                    touch "$temp_base/.rawjs_private"
+                    chmod +x "$temp_base/Raw.sh"
+                    return 0
+                else
+                    rm -rf "$temp_base"
+                    return 1
+                fi
+            }
+
+            mkdir -p "$ROUTER_BASE_POOL_DIR"
+            if mkdir "$lock_file" 2>/dev/null; then
+                trap "rmdir \"$lock_file\" 2>/dev/null" EXIT
+                while true; do
+                    current=$(find "$ROUTER_BASE_POOL_DIR" -mindepth 1 -maxdepth 1 -type d ! -name ".tmp*" 2>/dev/null | wc -l)
+                    if [ "$current" -ge "$target" ]; then
+                        break
+                    fi
+                    temp_base="$ROUTER_BASE_POOL_DIR/.tmp_$$"
+                    router_create_single_base "$temp_base"
+                    if [ $? -eq 0 ]; then
+                        final_base="$ROUTER_BASE_POOL_DIR/base_$(date +%s)_$RANDOM"
+                        mv "$temp_base" "$final_base" 2>/dev/null
+                    fi
+                done
+                rmdir "$lock_file" 2>/dev/null
+            fi
+        ' >/dev/null 2>&1 &
+    }
+
+    # Manage base pool: trim excess and spawn creator if needed
+    # Must be called while holding router lock
+    router_manage_base_pool() {
+        mkdir -p "$ROUTER_BASE_POOL_DIR"
+        local recent_active
+        recent_active=$(router_get_recent_active_count)
+        local target_idle
+        target_idle=$(router_calculate_target_idle "$recent_active")
+        # Persist target for next call
+        echo "$target_idle" > "$ROUTER_BASE_POOL_DIR/.target"
+
+        local current_bases
+        current_bases=$(router_count_available_bases)
+
+        if [ "$current_bases" -lt "$target_idle" ]; then
+            # Need more bases: spawn background creator
+            router_spawn_base_creator "$target_idle"
+        elif [ "$current_bases" -gt "$target_idle" ]; then
+            # Too many idle bases: trim
+            router_trim_bases "$target_idle"
+        fi
+    }
+
+    # Synchronous base pool creation (used by --start)
+    router_create_bases_sync() {
+        local target="$1"
+        local lock_file="$ROUTER_LOCK_DIR/base_pool.lock"
+        while ! mkdir "$lock_file" 2>/dev/null; do
+            sleep 0.2
+        done
+        trap 'rmdir "$lock_file" 2>/dev/null' EXIT
+
+        while true; do
+            local current
+            current=$(router_count_available_bases)
+            if [ "$current" -ge "$target" ]; then
+                break
+            fi
+            local temp_base="$ROUTER_BASE_POOL_DIR/.tmp_$$"
+            router_create_single_base "$temp_base"
+            if [ $? -eq 0 ]; then
+                local final_base="$ROUTER_BASE_POOL_DIR/base_$(date +%s)_$RANDOM"
+                mv "$temp_base" "$final_base" 2>/dev/null
+            fi
+        done
+        rmdir "$lock_file" 2>/dev/null
+        trap - EXIT
+    }
+
+    # Acquire a base from pool: use atomic rename for instant linking
+    # Returns 0 on success, 1 if no base available
+    router_acquire_base() {
+        local base_dir
+        base_dir=$(find "$ROUTER_BASE_POOL_DIR" -mindepth 1 -maxdepth 1 -type d ! -name '.tmp*' -print -quit 2>/dev/null)
+        if [ -n "$base_dir" ]; then
+            # Use mv (rename) for instant linking if on same filesystem
+            # Fallback to cp -al (hardlink copy) if mv fails
+            if ! mv "$base_dir" "$ROUTER_PRIVATE_ROOT" 2>/dev/null; then
+                # Try hardlink copy (very fast, same filesystem)
+                if command -v cp >/dev/null 2>&1; then
+                    cp -al "$base_dir" "$ROUTER_PRIVATE_ROOT" 2>/dev/null
+                    if [ $? -eq 0 ]; then
+                        rm -rf "$base_dir" 2>/dev/null
+                        return 0
+                    fi
+                fi
+                return 1
+            fi
+            return 0
+        fi
+        return 1
+    }
+
+    # ---------------------------------------------------------------------
+    # Handle --start special mode
+    # ---------------------------------------------------------------------
+    if [ "$1" = "--start" ]; then
+        mkdir -p "$ROUTER_LOCK_DIR"
+        # Acquire router lock to avoid concurrent pool operations
+        while ! mkdir "$ROUTER_LOCK" 2>/dev/null; do
+            if [ -d "$ROUTER_LOCK" ]; then
+                # If lock is stale (older than 60 seconds), remove it
+                ROUTER_LOCK_AGE=$(find "$ROUTER_LOCK" -maxdepth 0 -mmin +1 2>/dev/null | wc -l)
+                if [ "$ROUTER_LOCK_AGE" -gt 0 ]; then
+                    rm -rf "$ROUTER_LOCK" 2>/dev/null
+                    continue
+                fi
+            fi
+            sleep 0.1
+        done
+
+        # Compute target and create bases synchronously
+        local recent_active
+        recent_active=$(router_get_recent_active_count)
+        local target_idle
+        target_idle=$(router_calculate_target_idle "$recent_active")
+        echo "$target_idle" > "$ROUTER_BASE_POOL_DIR/.target"
+        echo "Warming base pool to $target_idle idle bases..." >&2
+        router_create_bases_sync "$target_idle"
+
+        rmdir "$ROUTER_LOCK" 2>/dev/null
+        echo "Base pool ready." >&2
+        exit 0
+    fi
+
+    # ---------------------------------------------------------------------
+    # Normal terminal connection flow
+    # ---------------------------------------------------------------------
+
+    # Clean stale router locks (older than 60 seconds) but never delete base_pool.lock
+    find "$ROUTER_LOCK_DIR" -mindepth 1 -maxdepth 1 -type d ! -name 'base_pool.lock' -mmin +1 -exec rmdir {} \; 2>/dev/null
 
     # --- Acquire router lock with stale detection --------------------------
     ROUTER_ACQUIRED=0
@@ -77,36 +377,28 @@ if [ -z "${RAWJS_PRIVATE_MODE:-}" ] && [ ! -f "$SCRIPT_DIR/.rawjs_private" ]; th
         fi
     done
 
+    # Manage base pool (trim/spawn) while lock held
+    router_manage_base_pool
+
     # --- Ensure a complete private copy exists -----------------------------
     ROUTER_FIRST_RUN=0
     if [ ! -f "$ROUTER_PRIVATE_ROOT/Raw.sh" ] || [ ! -d "$ROUTER_PRIVATE_ROOT/._" ]; then
-        echo "Initializing isolated environment for terminal: $ROUTER_TID_RAW ..." >&2
         ROUTER_FIRST_RUN=1
-        rm -rf "$ROUTER_PRIVATE_ROOT" 2>/dev/null
-        mkdir -p "$ROUTER_PRIVATE_ROOT"
 
-        # Copy entire project except router-specific and runtime directories.
-        # The private copy will create its own runtime pool directories.
-        (
-            cd "$SCRIPT_DIR" && \
-            tar \
-                --exclude='./.terminals' \
-                --exclude='./.router_locks' \
-                --exclude='./.runtime_locks' \
-                --exclude='./dev' \
-                --exclude='./dev_*' \
-                -cf - .
-        ) | (
-            cd "$ROUTER_PRIVATE_ROOT" && tar -xf -
-        )
-
-        # Mark as private and ensure Raw.sh is executable
-        touch "$ROUTER_PRIVATE_ROOT/.rawjs_private"
-        chmod +x "$ROUTER_PRIVATE_ROOT/Raw.sh" 2>/dev/null
+        # Try to use a pre-warmed base (instant linking via rename)
+        if router_acquire_base "$ROUTER_TID"; then
+            # Successfully linked to a pre-warmed base
+            :
+        else
+            # Fallback: create from original project (fast, excludes .git)
+            echo "Initializing isolated environment for terminal: $ROUTER_TID_RAW ..." >&2
+            rm -rf "$ROUTER_PRIVATE_ROOT" 2>/dev/null
+            mkdir -p "$ROUTER_PRIVATE_ROOT"
+            router_create_single_base "$ROUTER_PRIVATE_ROOT"
+        fi
     fi
 
     # --- Sync global config to private copy --------------------------------
-    # FIX: Ensure the private copy gets the latest global config
     if [ -f "$ROUTER_GLOBAL_CONFIG" ]; then
         cp "$ROUTER_GLOBAL_CONFIG" "$ROUTER_PRIVATE_ROOT/config.txt" 2>/dev/null
     fi
@@ -1496,6 +1788,7 @@ show_usage() {
     echo -e "${YELLOW}       bash Raw.sh --asm [path/to/file.js] [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --bin [output_name] <path/to/file.js> [args...]${NC}"
     echo -e "${YELLOW}       bash Raw.sh --bin [options] <build_output.asm>${NC}"
+    echo -e "${YELLOW}       bash Raw.sh --start${NC}"
 }
 
 # Process the JavaScript file - just store path and args for later use
